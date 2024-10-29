@@ -30,7 +30,8 @@ pip install -r requirements.txt
 
 Then simply run the script
 ```
-python run.py -s -p
+using Demo_sac.ipynb
+
 ```
 where `-s` shows the simulation and `-p` shows the plotter. By default these are both off. On first run, it will download the HoloOcean binaries which may take a minute. To see a full list of simulation options, run
 ```
