@@ -1,0 +1,375 @@
+import numpy as np
+from auv_control import State
+from .base import BasePlanner
+from collections import deque
+import random
+import torch
+import torch.nn as nn
+import torch.optim as optim
+import logging
+import wandb
+from scipy.linalg import solve_continuous_are
+from auv_control.control import LQR
+from auv_control.estimation import InEKF
+from auv_control import scenario
+from auv_control.planning.astar import Astar
+import sys
+
+
+# Set up logging to output to the console and file
+logging.basicConfig(level=logging.INFO, format='%(message)s', handlers=[
+    logging.FileHandler("training.log"),
+    logging.StreamHandler()
+])
+
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+class LQRNPDDQNPlanner(Bas\
+                       ePlanner):
+    def __init__(self, num_seconds, num_obstacles=30, start=None, end=None, state_dim=24, action_dim=3, max_memory=1000, batch_size=2560, gamma=0.99, lr=1e-3):
+        # Parameters
+        self.num_seconds = num_seconds
+        self.state_dim = state_dim  # Update state_dim to include richer state information
+        self.action_dim = action_dim
+        self.gamma = gamma
+        self.batch_size = batch_size
+        self.max_memory = max_memory
+        self.memory = deque(maxlen=max_memory)
+        self.epsilon = 1.0  # Exploration-exploitation balance
+        self.epsilon_min = 0.1
+        self.epsilon_decay = 0.995  # Adjusted epsilon decay rate
+
+        # Setup goal
+        self.start = np.array([0, 0, -5]) if start is None else start
+        self.end = np.array([50, 40, -20]) if end is None else end
+
+        # Setup environment
+        self.size = np.array([50, 50, 25])
+        self.bottom_corner = np.array([-5, -5, -25])
+
+        # Setup obstacles
+        self.num_obstacles = num_obstacles
+        self.obstacle_size = np.random.uniform(2, 5, self.num_obstacles)
+        self.obstacle_loc = np.random.beta(1.5, 1.5, (num_obstacles, 3)) * self.size + self.bottom_corner
+        for i in range(self.num_obstacles):
+            while np.linalg.norm(self.obstacle_loc[i] - self.start) < 10 or np.linalg.norm(self.obstacle_loc[i] - self.end) < 10:
+                self.obstacle_loc[i] = np.random.beta(2, 2, 3) * self.size + self.bottom_corner
+
+        # Neural Networks
+        self.policy_net = self._build_network().to(device)
+        self.target_net = self._build_network().to(device)
+        self.optimizer = optim.Adam(self.policy_net.parameters(), lr=lr)
+
+        # Update target network initially
+        self._update_target_network()
+
+        # Setup base planner properties
+        super().__init__()
+        self.pos_func = self._pos_func
+        self.rot_func = self._rot_func
+
+        # Store previous action for smoothness reward
+        self.previous_action = None
+
+        # Initialize wandb
+        wandb.init(project="auv_control_project", name="NPDDQN_training")
+        wandb.config.update({
+            "state_dim": state_dim,
+            "action_dim": action_dim,
+            "gamma": gamma,
+            "batch_size": batch_size,
+            "learning_rate": lr,
+            "epsilon_decay": self.epsilon_decay,
+        })
+
+        # LQR parameters
+        self.m = 31.02  # Mass of the AUV
+        self.J = np.eye(3) * 2  # Moment of inertia (example values)
+        self.Q_lqr = np.diag([100, 100, 100, 1, 1, 1])  # State cost matrix
+        self.R_lqr = np.diag([0.01, 0.01, 0.01])  # Control cost matrix
+
+    def _build_network(self):
+        """Builds a simple feedforward neural network."""
+        return nn.Sequential(
+            nn.Linear(self.state_dim, 128),
+            nn.ReLU(),
+            nn.Linear(128, 128),
+#             nn.ReLU(),
+#             nn.Linear(128, 128),
+            nn.ReLU(),
+            nn.Linear(128, self.action_dim),
+        )
+
+    def _update_target_network(self):
+        """Copies the weights from the policy network to the target network."""
+        self.target_net.load_state_dict(self.policy_net.state_dict())
+
+    def remember(self, state, action, reward, next_state, done):
+        self.memory.append((state, action, reward, next_state, done))
+
+    def _select_action(self, state, lqr_action):
+        """Selects action using epsilon-greedy policy and combines with LQR action."""
+        if random.random() < self.epsilon:
+            # Exploration: Random action
+            action = np.random.choice([-10,10], self.action_dim)
+            #action = np.random.uniform(-1,1, self.action_dim)
+
+        else:
+            # Exploitation: Use policy network
+            state_tensor = torch.FloatTensor(self.pad_state(state)).unsqueeze(0).to(device)
+            with torch.no_grad():
+                action = self.policy_net(state_tensor).cpu().numpy().flatten()
+
+        lqr_weight = 0.1
+        policy_weight = 1.0 - lqr_weight
+
+        # Combine LQR action with policy network action
+        combined_action = lqr_weight * lqr_action + policy_weight * action
+        # Apply action smoothing
+#         if self.previous_action is not None:
+#             combined_action = 0.9 * self.previous_action + 0.1 * combined_action
+
+        self.previous_action = combined_action
+        return combined_action
+
+    def pad_state(self, state, target_dim=24):
+        """Pad the state to match the required dimension."""
+        state_flat = np.ravel(state)
+        if state_flat.shape[0] < target_dim:
+            padded_state = np.pad(state_flat, (0, target_dim - state_flat.shape[0]), 'constant', constant_values=0)
+        else:
+            padded_state = state_flat[:target_dim]
+        return padded_state
+
+    def _replay(self):
+        if len(self.memory) < self.batch_size:
+            return None
+
+        batch = random.sample(self.memory, self.batch_size)
+        states, actions, rewards, next_states, dones = zip(*batch)
+
+        # Ensure states have the correct shape
+        states = torch.FloatTensor(np.array([self.pad_state(s) for s in states])).to(device)
+        next_states = torch.FloatTensor(np.array([self.pad_state(ns) for ns in next_states])).to(device)
+
+        actions = torch.LongTensor([np.argmax(np.ravel(a)) for a in actions]).to(device)
+        rewards = torch.FloatTensor(rewards).squeeze().to(device)
+        dones = torch.FloatTensor(dones).to(device)
+
+        # Forward pass through the network to predict Q-values
+        q_values = self.policy_net(states)
+        q_values = q_values.gather(1, actions.unsqueeze(1)).squeeze(1)
+
+        # Calculate target Q-values
+        with torch.no_grad():
+            next_q_values = self.target_net(next_states).max(1)[0]
+        target_q_values = rewards + (self.gamma * next_q_values * (1 - dones))
+
+        # Compute loss and backpropagate
+        loss = nn.MSELoss()(q_values, target_q_values)
+        self.optimizer.zero_grad()
+        loss.backward()
+        self.optimizer.step()
+
+        return loss.item()
+
+    def save_model(self, episode, path='npddqn_model.pth'):
+        torch.save({
+            'episode': episode,
+            'model_state_dict': self.policy_net.state_dict(),
+            'optimizer_state_dict': self.optimizer.state_dict(),
+        }, path)
+        logging.info(f"Model saved at episode {episode}" + str(path))
+
+    def load_model(self, path='npddqn_model.pth'):
+        checkpoint = torch.load(path)
+        self.policy_net.load_state_dict(checkpoint['model_state_dict'])
+        self.optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
+        logging.info(f"Model loaded from {path}")    
+
+        
+    def train(self, env, num_episodes=500, max_steps=2000, save_interval=50):
+        reward_ref = -float('inf')
+        og_distance_to_goal = np.linalg.norm(self.start - self.end)
+        controller = LQR()
+        observer = InEKF()
+        ts = 1 / scenario["ticks_per_sec"]
+        num_ticks = int(max_steps / ts)
+        planner = Astar(max_steps)
+        for episode in range(num_episodes):
+            logging.info(f"Episode {episode + 1} starting")
+            state_info = env.reset()
+            state = State(state_info)  # Use State class to initialize state
+            done = False
+            total_reward = 0
+            episode_loss = 0
+            step_count = 0
+
+            while not done and step_count < max_steps:
+                # Get LQR action
+                #lqr_action = self._lqr_action(state)  # Placeholder for LQR action computation
+
+
+                # Get LQR action
+                sensors = env.tick()
+                # Pluck true state from sensors
+                t = sensors["t"]
+                true_state = State(sensors)
+                print("debug!True state sensors",sensors)
+                # Estimate State
+                est_state = observer.tick(sensors, ts)
+                db_est_state = observer.show(sensors, ts)
+                print("debug! est_state",db_est_state)
+
+                # Path planner
+                des_state = planner.tick(t)
+                db_des_state = planner.show(t)
+
+                print("debug! des_state",db_des_state)
+                # Autopilot Commands
+                u = controller.u(est_state, des_state)
+                lqr_action = u
+                print("debugging action!!",action)
+                # Get LQR action
+                print("Before exit")
+                if step_count >2:
+                    sys.exit()  # 在这里停止代码
+                
+                #action = self._select_action(state.vec, lqr_action)
+                
+                next_state_info = env.step(action, ticks=2,publish=False)
+                #print("debugging position!!",next_state_info["PoseSensor"][:3,3]) #position info
+
+                next_state = State(next_state_info)  # Use State class for next state
+                reward = next_state_info.get('reward', 0)
+                done = next_state_info.get('done', False)
+
+                # Goal distance reward
+                distance_to_goal = np.linalg.norm(next_state.vec[0:3] - self.end)
+                reward += (10 if distance_to_goal < og_distance_to_goal else -0.01 * distance_to_goal)
+
+                # Add obstacle avoidance penalty
+                distance_to_nearest_obstacle = np.min([np.linalg.norm(next_state.vec[0:3] - obs) for obs in self.obstacle_loc])
+                if distance_to_nearest_obstacle < 5:
+                    reward -= 25  # Penalty for being too close to obstacles
+
+                # Set done if the agent is close enough to the goal
+                if distance_to_goal < 0.5:
+                    done = True
+                    reward += 100
+
+                # Smoothness reward
+                if self.previous_action is not None:
+                    reward -= 0.1 * np.linalg.norm(action - self.previous_action)  # Penalize large action changes
+
+                # Store transition in memory
+                self.remember(state.vec, action, reward, next_state.vec, done)
+                state = next_state
+                total_reward += reward
+
+                # Perform replay and get loss value
+                loss = self._replay()
+                episode_loss += loss if loss is not None else 0
+                step_count += 1
+
+            # Log metrics to wandb
+            wandb.log({
+                "episode": episode + 1,
+                "total_reward": total_reward,
+                "average_loss": episode_loss / step_count if step_count > 0 else 0,
+                "epsilon": self.epsilon
+            })
+
+            # Adjust epsilon
+            self.epsilon = max(self.epsilon_min, self.epsilon * self.epsilon_decay)
+            self._update_target_network()
+
+            logging.info(f"Episode {episode + 1} completed - Total Reward: {total_reward}, Loss: {episode_loss / step_count if step_count > 0 else 0}")
+
+            # Save the model with the best reward
+            if distance_to_goal < og_distance_to_goal:
+                self.save_model(episode + 1, path='npddqn_best_reward_model.pth')
+                og_distance_to_goal = distance_to_goal
+                wandb.log({"best_distance_to_goal": distance_to_goal})
+                print("Best distance to goal achieved", distance_to_goal)
+
+    def _lqr_action(self, state):
+        """LQR action computation."""
+            # 如果 state 是 numpy 数组，需要转换成正确的 State 类对象
+        if isinstance(state, np.ndarray):
+            state = State(state)  # 假设有 State 类可以从 numpy 数组初始化
+            #print("debugging State!!!!!",state)
+
+        # Define the state-space model matrices
+        A = np.zeros((6, 6))
+        A[0:3, 3:6] = np.eye(3)
+        B = np.zeros((6, 3))
+        B[3:6, 0:3] = np.eye(3) / self.m
+
+        # Solve the continuous-time algebraic Riccati equation
+        P = solve_continuous_are(A, B, self.Q_lqr, self.R_lqr)
+
+        # Compute the LQR gain
+        K = np.linalg.inv(self.R_lqr) @ B.T @ P
+
+        # Extract the relevant state vector (position and velocity)
+        x = np.hstack((state.vec[0:3], state.vec[3:6]))
+
+        # Compute the control action using LQR
+        u = -K @ x
+
+        return u
+
+    def _pos_func(self, t):
+        """Generate position based on learned policy."""
+        # Use the policy network to determine the next position
+        state = np.zeros(self.state_dim - 3)  # Replace with the actual current state
+        velocity = np.zeros(3)  # Assuming a velocity component is included
+        distance_to_goal = np.linalg.norm(state[0:3] - self.end)
+        distance_to_nearest_obstacle = np.min([np.linalg.norm(state[0:3] - obs) for obs in self.obstacle_loc])
+        state = np.append(state, [velocity[0], velocity[1], velocity[2], distance_to_goal, distance_to_nearest_obstacle])
+        #print("debugging !!!!!",state)
+        action = self._select_action(state, self._lqr_action(state))
+        rotation = 0.1 * action[0:3]  # Scale action to limit rotation update magnitude
+        return rotation  # Ensure the rotation is a 1D array
+    
+    def _rot_func(self, t):
+        """Generate rotation based on learned policy."""
+        # Use the policy network to determine the next rotation
+        state = np.zeros(self.state_dim - 3)  # Replace with the actual current state
+        distance_to_goal = np.linalg.norm(state[0:3] - self.end)
+        distance_to_nearest_obstacle = np.min([np.linalg.norm(state[0:3] - obs) for obs in self.obstacle_loc])
+        state = np.append(state, [distance_to_goal, distance_to_nearest_obstacle])
+        action = self._select_action(state, self._lqr_action(state))
+
+        rotation = 0.1 * action[0:3]  # Scale action to limit rotation update magnitude
+        return rotation  # Ensure the rotation is a 1D array
+
+    @property
+    def center(self):
+        return self.bottom_corner + self.size / 2
+
+    @property
+    def top_corner(self):
+        return self.bottom_corner + self.size
+
+    def draw_traj(self, env, t):
+        """Override super class to also make environment appear"""
+        # Setup environment
+        env.draw_box(self.center.tolist(), (self.size / 2).tolist(), color=[0, 0, 255], thickness=30, lifetime=0)
+        for i in range(self.num_obstacles):
+            loc = self.obstacle_loc[i].tolist()
+            loc[1] *= -1
+            env.spawn_prop('sphere', loc, [0, 0, 0], self.obstacle_size[i], False, "white")
+
+        des_state = self._traj(t)
+
+        # If des_state is 1D, make it 2D for consistency in indexing
+        if des_state.ndim == 1:
+            des_state = des_state.reshape(1, -1)
+
+        des_pos = des_state[:, 0:3]
+
+        # Draw line between each point
+        for i in range(len(des_pos) - 1):
+            env.draw_line(des_pos[i].tolist(), des_pos[i + 1].tolist(), thickness=5.0, lifetime=0.0)
