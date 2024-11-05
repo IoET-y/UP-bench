@@ -32,7 +32,7 @@ class LQRSACPlanner(BasePlanner):
         # for dynamic adjust env reset
         self.episode_cnt = 0  # 设置混合策略切换的数值
         self.reach_targe_times = 0
-
+        self.step_cnt = 0
         # Parameters
         self.num_seconds = num_seconds
         self.state_dim = state_dim
@@ -235,19 +235,7 @@ class LQRSACPlanner(BasePlanner):
         policy_loss.backward()
         torch.nn.utils.clip_grad_norm_(self.policy_net.parameters(), max_norm=1.0)  # 添加梯度裁剪
         self.policy_optimizer.step()
-        # self.q_optimizer1.zero_grad()
-        # q_loss1.backward()
-        # self.q_optimizer1.step()
 
-        # self.q_optimizer2.zero_grad()
-        # q_loss2.backward()
-        # self.q_optimizer2.step()
-
-        # policy_loss = -(self.q_net1(torch.cat([states, self.policy_net(states)], dim=1))).mean()
-
-        # self.policy_optimizer.zero_grad()
-        # policy_loss.backward()
-        # self.policy_optimizer.step()
         wandb.log({
             "episode": self.epsd + 1,
             "q_loss1": q_loss1,
@@ -261,10 +249,10 @@ class LQRSACPlanner(BasePlanner):
             target_param.data.copy_(self.tau * param.data + (1 - self.tau) * target_param.data)
 
     def train(self, env, num_episodes=500, max_steps=3000, model_path="sac_best_model.pth"):
-
-        
+        max_step_increment = 512
+        self.maxstep = max_steps
         self.episode_cnt = 0
-        wandb.init(project="auv_RL_control_project_SAC", name=model_path)
+        wandb.init(project="auv_RL_control_project_SAC_new", name=model_path)
         wandb.config.update({
             "state_dim": self.state_dim,
             "action_dim": self.action_dim,
@@ -280,10 +268,12 @@ class LQRSACPlanner(BasePlanner):
         planner = Astar(max_steps)
         ts = 1 / scenario["ticks_per_sec"]
         last_position = None  # 用于保存上一个 episode 的结束位置
-
+        tmp = max_steps
         for episode in range(num_episodes):
+            
             self.static_on = False
             self.static_cnt = 0
+            self.step_cnt = 0
             self.first_reach_close = 0
             self.epsd = episode
             logging.info(f"Episode {episode + 1} starting")
@@ -296,31 +286,34 @@ class LQRSACPlanner(BasePlanner):
                 self.setup_end()
                 self.setup_obstacles()
                 
-            if self.episode_cnt in range(10,15) and ((self.done == False) and self.prev_distance_to_goal<10):#20241030
-                # 使用上一个 episode 的结束位置继续
-                state = next_state
-                print("auv position:",state.vec[0:3])
-                distance_to_goal = np.linalg.norm(state.vec[0:3] - self.end)
-                self.prev_distance_to_goal = distance_to_goal
-            else:
+            # if self.episode_cnt in range(10,15) and ((self.done == False) and self.prev_distance_to_goal<10):#20241030
+            #     # 使用上一个 episode 的结束位置继续
+            #     state = next_state
+            #     print("auv position:",state.vec[0:3])
+            #     distance_to_goal = np.linalg.norm(state.vec[0:3] - self.end)
+            #     self.prev_distance_to_goal = distance_to_goal
+            # else:
                 #self.episode_cnt = 0
-                state_info = env.reset()
-                env.agents["auv0"].teleport(self.start,[0,0,0])
-                sensors = env.tick()
-                state_info=sensors
-                state = State(state_info)
-                print("self start:",self.start)
-                print("auv position:",state.vec[0:3])
-                distance_to_goal = np.linalg.norm(self.start - self.end)
-                self.prev_distance_to_goal = np.linalg.norm(self.start - self.end)
+            state_info = env.reset()
+            env.agents["auv0"].teleport(self.start,[0,0,0])
+            sensors = env.tick()
+            state_info=sensors
+            state = State(state_info)
+            print("self start:",self.start)
+            print("auv position:",state.vec[0:3])
+            distance_to_goal = np.linalg.norm(self.start - self.end)
+            self.prev_distance_to_goal = np.linalg.norm(self.start - self.end)
                 
 
             self.done = False     
             done = False
             step_count = 0
             total_reward = 0
+            added_steps = 0
+            max_steps = tmp
             self.distance_to_nearest_obstacle = np.min([np.linalg.norm(state.vec[0:3] - obs) for obs in self.obstacle_loc])
             while not done and step_count < max_steps:
+                self.step_cnt = step_count + 1
                 sensors = env.tick()
                 t = sensors["t"]
                 true_state = State(sensors)
@@ -347,12 +340,17 @@ class LQRSACPlanner(BasePlanner):
 
                 reward = self.calculate_reward(true_state, next_state, combined_action)
                 total_reward += reward
-   
+               # 如果接近终点但未达到目标，增加 max_steps
+                if distance_to_goal < 5 and step_count >= max_steps - 1 and added_steps <max_step_increment:
+                    max_steps += 64
+                    added_steps += 64
+                    logging.info(f"Increasing max steps to {max_steps} for additional exploration.")
+            
 
                 
                 self.remember(real_state, combined_action, reward, real_next_state, done)
                 self.update_policy()
-
+                
                 step_count += 1
                 wandb.log({
                     "step_count": step_count,
@@ -375,96 +373,81 @@ class LQRSACPlanner(BasePlanner):
                 "total_reward": total_reward,
                 "distance to goal": distance_to_goal
             })
-            if abs(self.last_distance_to_goal - distance_to_goal) < 10 and episode > 300 and distance_to_goal < 10:
-                self.static_cnt =  self.static_cnt + 1
-                self.static_on = True
-            else:
-                self.static_cnt = 0
-                self.static_on = False
+            # if abs(self.last_distance_to_goal - distance_to_goal) < 10 and episode > 300 and distance_to_goal < 10:
+            #     self.static_cnt =  self.static_cnt + 1
+            #     self.static_on = True
+            # else:
+            #     self.static_cnt = 0
+            #     self.static_on = False
                 
             self.last_distance_to_goal = distance_to_goal
             
             logging.info(f"Episode {episode + 1} completed - Total Reward: {total_reward}")
             self.save_model(episode + 1, model_path)
-
+            
     def calculate_reward(self, state, next_state, action):
-        # Define the box boundaries
-        box_x_min, box_y_min, box_z_min = self.bottom_corner
-        box_x_max, box_y_max, box_z_max = self.bottom_corner + self.size
-
-        # Check if the agent is outside the box
-        is_outside_box = (
-            next_state.vec[0] < box_x_min or next_state.vec[0] > box_x_max or
-            next_state.vec[1] < box_y_min or next_state.vec[1] > box_y_max or
-            next_state.vec[2] < box_z_min or next_state.vec[2] > box_z_max
-        )
-        outside_box_penalty = -2 if is_outside_box else 0
+        # 计算各类奖励和惩罚
+        movement_reward = self._movement_reward(state, next_state, action)
+        obstacle_reward = self._obstacle_reward(next_state)
+        out_of_box_penalty = self._out_of_box_penalty(next_state)
+        reach_target_reward = self._reach_target_reward(next_state)
         
-        # add step penalty ......
+        total_reward = movement_reward + obstacle_reward + out_of_box_penalty + reach_target_reward
         
-        
-        # Calculate the distance to the target
+        self.prev_distance_to_goal = np.linalg.norm(next_state.vec[0:3] - self.end)
+        self.previous_action = action
+        return total_reward
+    
+    #movement
+    def _movement_reward(self, state, next_state, action):
         distance_to_goal = np.linalg.norm(next_state.vec[0:3] - self.end)
-        progress_reward = 15 * (self.prev_distance_to_goal - distance_to_goal) #20241029 10->20
-        distance_reward = 1 * (1 / (distance_to_goal + 1))  # Logarithmic distance reward  1030 0.5->1
+        distance_reward = 15 * (1 / (distance_to_goal + 1) - 1 / (self.og_distance_to_goal + 1))
         
-        if distance_to_goal < 10 and progress_reward > 0: # add 20241104
-            distance_reward = (11-distance_to_goal)*distance_reward
-        else:
-            distance_reward = distance_reward
-            
-        # if self.static_on:
-        #     distance_reward = 0
-            
-        # Penalties for proximity to obstacles
-        self.distance_to_nearest_obstacle = np.min([np.linalg.norm(next_state.vec[0:3] - obs) for obs in self.obstacle_loc])
-        obstacle_penalty = 0
-        if self.distance_to_nearest_obstacle < 3: 
-            obstacle_penalty = -5 * np.exp(-self.distance_to_nearest_obstacle)   #20241029 0.5 -> 0.1
-
-        safety_reward = 0.3 if self.distance_to_nearest_obstacle > 2 else 0  # Reward for maintaining safe distance
-
-        # Static penalty: Encourage movement by penalizing small displacements over multiple steps
-        static_penalty = -0.5 if np.linalg.norm(state.vec[0:3] - next_state.vec[0:3]) < 0.01 else 0 #20241030
-        if distance_to_goal < 2: #20241101 add
-            obstacle_penalty = 0
-            static_penalty = 0
-        
-        #last_static_penalty = -200*self.static_cnt if (self.static_cnt > 5 and self.static_on) else 0
-        #last_static_penalty = -500*self.static_cnt if (self.static_cnt > 10 and self.static_on) else 0
-
-        # Action smoothness penalty: Encourage smooth control inputs to avoid drastic changes in action
         action_smoothness_penalty = -0.02 * np.linalg.norm(action - self.previous_action)
-
-        # Alignment reward: Encourage movement in the direction of the goal
+        
+        energy_penalty = -0.1 * (1 + self.step_cnt / 1000) # 每一步都产生一个小的负奖励
+        
         goal_direction = (self.end - state.vec[0:3]) / (np.linalg.norm(self.end - state.vec[0:3]) + 1e-5)
         velocity_direction = next_state.vec[3:6] / (np.linalg.norm(next_state.vec[3:6]) + 1e-5)
-        alignment_reward = np.clip(1.0 * np.dot(goal_direction, velocity_direction), 0, 1)
+        alignment_reward = np.clip(np.dot(goal_direction, velocity_direction), 0, 1)**2
+        
+        static_penalty = -0.5 if np.linalg.norm(state.vec[0:3] - next_state.vec[0:3]) < 0.01 else 0
+        
+        return distance_reward + action_smoothness_penalty + energy_penalty + alignment_reward + static_penalty
+    
+    def _obstacle_reward(self, next_state):
+        safe_distance_threshold = 2  # 安全距离
+        self.distance_to_nearest_obstacle = np.min([np.linalg.norm(next_state.vec[0:3] - obs) for obs in self.obstacle_loc])
+        
+        if self.distance_to_nearest_obstacle < safe_distance_threshold:
+            obstacle_penalty = -5 * np.exp(-self.distance_to_nearest_obstacle)
+        else:
+            obstacle_penalty = 0.3  # 安全距离内给予正奖励
+        
+        return obstacle_penalty
+    
+    # 出界类惩罚
+    def _out_of_box_penalty(self, next_state):
 
-        # Reach target reward: High reward when agent is very close to the target
-        if distance_to_goal < 10 and self.first_reach_close <= 1:
-            self.first_reach_close = self.first_reach_close + 1 #. new try 20241029
-            
-        reach_close_reward = 100 if self.first_reach_close == 1 else 0 #. new try 20241029
-        reach_target_reward = 500 if distance_to_goal < 1.5 else 0
+        is_outside_box = (
+            next_state.vec[0] < self.bottom_corner[0] or next_state.vec[0] > self.top_corner[0] or
+            next_state.vec[1] < self.bottom_corner[1] or next_state.vec[1] > self.top_corner[1] or
+            next_state.vec[2] < self.bottom_corner[2] or next_state.vec[2] > self.top_corner[2]
+        )
+        return -2 if is_outside_box else 0
+    
 
-        # Incline penalty: Penalize for extreme pitch or roll angles
-        roll, pitch = state.vec[6], state.vec[7]
-        incline_penalty = 0.001 * (max(roll - 15, 0) + max(170 - pitch, 0))
-
-        # Aggregate rewards and penalties
-        total_reward = (
-            progress_reward + distance_reward +
-            obstacle_penalty + safety_reward +
-            static_penalty + action_smoothness_penalty +
-            alignment_reward + reach_target_reward +
-            outside_box_penalty - incline_penalty + reach_close_reward #+ last_static_penalty
-            )
-        # Update previous distance to goal for future progress calculation
-        self.prev_distance_to_goal = distance_to_goal
-
-        self.previous_action = action
-        return total_reward # normalized_reward # cancel normalize
+    def _reach_target_reward(self, next_state):
+        distance_to_goal = np.linalg.norm(next_state.vec[0:3] - self.end)
+        
+        if distance_to_goal < 1:
+            reach_target_reward = 500
+        elif distance_to_goal < 10:
+            reach_target_reward = 100 / (distance_to_goal + 1)
+        else:
+            reach_target_reward = 0
+        
+        return reach_target_reward
 
     def save_model(self, episode, path='sac_best_model.pth'):
         torch.save({
@@ -492,9 +475,9 @@ class LQRSACPlanner(BasePlanner):
             padded_state = state_flat[:target_dim]
         return padded_state
 
+# function below are not used in training process, can skip them
 
-
-    #parts below are utils function, can ignore them while training and inference.
+    
     def pos_func(self, state,t):
         """
         Position function to calculate desired position at time t using the policy model.
