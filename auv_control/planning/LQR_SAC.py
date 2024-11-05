@@ -19,8 +19,6 @@ from torch.optim.lr_scheduler import ReduceLROnPlateau
 from collections import namedtuple
 import holoocean
 
-Transition = namedtuple('Transition', ('state', 'action', 'reward', 'next_state', 'done'))
-
 # Set up logging to output to the console and file
 logging.basicConfig(level=logging.INFO, format='%(message)s', handlers=[
     logging.FileHandler("training.log"),
@@ -30,7 +28,7 @@ logging.basicConfig(level=logging.INFO, format='%(message)s', handlers=[
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 class LQRSACPlanner(BasePlanner):
-    def __init__(self, num_seconds, num_obstacles=20, start=None, end=None, state_dim=21, action_dim=8, lr=3e-4, gamma=0.95, tau=0.005, alpha=0.2, batch_size=256, replay_buffer_size=100000): #bs up to 256
+    def __init__(self, num_seconds, num_obstacles=20, start=None, end=None, state_dim=21, action_dim=8, lr=3e-4, gamma=0.95, tau=0.003, alpha=0.2, batch_size=512, replay_buffer_size=1000000): #bs up to 256
         # for dynamic adjust env reset
         self.episode_cnt = 0  # 设置混合策略切换的数值
         self.reach_targe_times = 0
@@ -103,6 +101,11 @@ class LQRSACPlanner(BasePlanner):
         self.J = np.eye(3) * 2  # Moment of inertia (example values)
         self.Q_lqr = np.diag([100, 100, 100, 1, 1, 1])  # State cost matrix
         self.R_lqr = np.diag([0.01, 0.01, 0.01])  # Control cost matrix
+
+        #for static last statue penaty use
+        self.static_cnt = 0
+        self.last_distance_to_goal = 0 
+        self.static_on = False
         
     def setup_start(self):
         lower_bound = np.array([0, 0, -5])
@@ -132,17 +135,6 @@ class LQRSACPlanner(BasePlanner):
     def remember(self, state, action, reward, next_state, done):
         self.memory.append((state, action, reward, next_state, done))
 
-    # def initialize_weights(self, m):
-    #     if isinstance(m, nn.Linear):
-    #         nn.init.xavier_uniform_(m.weight)
-    #         if m.bias is not None:
-    #             nn.init.constant_(m.bias, 0)
-    # def initialize_weights(self, m): #20241029
-    #     if isinstance(m, nn.Linear):
-    #         nn.init.kaiming_uniform_(m.weight, nonlinearity='relu')  # 使用 Kaiming uniform 初始化
-    #         if m.bias is not None:
-    #             nn.init.constant_(m.bias, 0)  # 偏置初始化为 0
-    
     def initialize_weights(self, m):
         if isinstance(m, nn.Linear):
             if hasattr(m, 'out_features') and m.out_features == self.action_dim:
@@ -180,7 +172,16 @@ class LQRSACPlanner(BasePlanner):
         with torch.no_grad():
             action = self.policy_net(state_tensor).cpu().numpy()[0]
         if not inference:
-            action += np.random.normal(0, 0.1, size=self.action_dim)  # Exploration noise
+            if self.previous_distance_to_goal > 10:
+                noise_scale = 0.3  # 较远距离，较大的噪声
+            elif self.previous_distance_to_goal > 5:
+                noise_scale = 0.2
+            elif self.previous_distance_to_goal > 2:
+                noise_scale = 0.1
+            else:
+                noise_scale = 0.05  # 靠近目标时，减少噪声
+            action += np.random.normal(0, noise_scale, size=self.action_dim)
+            
         if self.previous_distance_to_goal > 10:
             action = np.clip(action * self.__MAX_THRUST, -self.__MAX_THRUST, self.__MAX_THRUST)
         elif self.previous_distance_to_goal > 5:
@@ -189,6 +190,8 @@ class LQRSACPlanner(BasePlanner):
             action = np.clip(action * 0.3 * self.__MAX_THRUST, -0.3*self.__MAX_THRUST, 0.3*self.__MAX_THRUST)
         else:
             action = np.clip(action * 0.15 * self.__MAX_THRUST, -0.15*self.__MAX_THRUST, 0.15*self.__MAX_THRUST)
+        if self.static_cnt >5:
+            action = 2*action
         return action
 
     def update_policy(self):
@@ -209,24 +212,42 @@ class LQRSACPlanner(BasePlanner):
             next_q = torch.min(next_q1, next_q2).squeeze(-1)  # Ensure next_q is [batch_size]
             target_q = rewards + self.gamma * (1 - dones) * next_q  # Rewards, dones, and next_q must all be [batch_size]
 
+
         current_q1 = self.q_net1(torch.cat([states, actions], dim=1)).squeeze()
         current_q2 = self.q_net2(torch.cat([states, actions], dim=1)).squeeze()
         q_loss1 = nn.MSELoss()(current_q1, target_q)
         q_loss2 = nn.MSELoss()(current_q2, target_q)
-
+        
+        # 梯度裁剪 20241104
         self.q_optimizer1.zero_grad()
         q_loss1.backward()
+        torch.nn.utils.clip_grad_norm_(self.q_net1.parameters(), max_norm=1.0)  # 添加梯度裁剪
         self.q_optimizer1.step()
-
+    
         self.q_optimizer2.zero_grad()
         q_loss2.backward()
+        torch.nn.utils.clip_grad_norm_(self.q_net2.parameters(), max_norm=1.0)  # 添加梯度裁剪
         self.q_optimizer2.step()
-
+    
+        # Calculate policy loss and update policy network
         policy_loss = -(self.q_net1(torch.cat([states, self.policy_net(states)], dim=1))).mean()
-
         self.policy_optimizer.zero_grad()
         policy_loss.backward()
+        torch.nn.utils.clip_grad_norm_(self.policy_net.parameters(), max_norm=1.0)  # 添加梯度裁剪
         self.policy_optimizer.step()
+        # self.q_optimizer1.zero_grad()
+        # q_loss1.backward()
+        # self.q_optimizer1.step()
+
+        # self.q_optimizer2.zero_grad()
+        # q_loss2.backward()
+        # self.q_optimizer2.step()
+
+        # policy_loss = -(self.q_net1(torch.cat([states, self.policy_net(states)], dim=1))).mean()
+
+        # self.policy_optimizer.zero_grad()
+        # policy_loss.backward()
+        # self.policy_optimizer.step()
         wandb.log({
             "episode": self.epsd + 1,
             "q_loss1": q_loss1,
@@ -261,6 +282,8 @@ class LQRSACPlanner(BasePlanner):
         last_position = None  # 用于保存上一个 episode 的结束位置
 
         for episode in range(num_episodes):
+            self.static_on = False
+            self.static_cnt = 0
             self.first_reach_close = 0
             self.epsd = episode
             logging.info(f"Episode {episode + 1} starting")
@@ -268,19 +291,19 @@ class LQRSACPlanner(BasePlanner):
             self.episode_cnt = self.episode_cnt + 1
             if self.done == True: #20241030 introduce dynamic start end point
                 self.episode_cnt = 0
+                self.static_cnt = 0
                 self.setup_start()
                 self.setup_end()
                 self.setup_obstacles()
                 
-            if self.episode_cnt  > (max_steps/100) and ((self.done == False) and self.prev_distance_to_goal<10):#20241030
+            if self.episode_cnt in range(10,15) and ((self.done == False) and self.prev_distance_to_goal<10):#20241030
                 # 使用上一个 episode 的结束位置继续
                 state = next_state
                 print("auv position:",state.vec[0:3])
                 distance_to_goal = np.linalg.norm(state.vec[0:3] - self.end)
                 self.prev_distance_to_goal = distance_to_goal
             else:
-                # spawn_command.set_location(self.start)  # 更改位置
-                # env.command_center.enqueue_command(spawn_command)
+                #self.episode_cnt = 0
                 state_info = env.reset()
                 env.agents["auv0"].teleport(self.start,[0,0,0])
                 sensors = env.tick()
@@ -291,8 +314,6 @@ class LQRSACPlanner(BasePlanner):
                 distance_to_goal = np.linalg.norm(self.start - self.end)
                 self.prev_distance_to_goal = np.linalg.norm(self.start - self.end)
                 
-            # state_info = env.reset()
-            # state = State(state_info)
 
             self.done = False     
             done = False
@@ -316,7 +337,7 @@ class LQRSACPlanner(BasePlanner):
                 next_state = State(next_state_info)
                 distance_to_goal = np.linalg.norm(next_state.vec[0:3] - self.end)
                 self.previous_distance_to_goal = distance_to_goal
-                done = np.linalg.norm(next_state.vec[0:3] - self.end) < 2
+                done = np.linalg.norm(next_state.vec[0:3] - self.end) < 1
                 self.done = done
                 
                 real_next_state = np.append(next_state.vec[0:], next_state.bias[0:])
@@ -354,7 +375,15 @@ class LQRSACPlanner(BasePlanner):
                 "total_reward": total_reward,
                 "distance to goal": distance_to_goal
             })
-
+            if abs(self.last_distance_to_goal - distance_to_goal) < 10 and episode > 300 and distance_to_goal < 10:
+                self.static_cnt =  self.static_cnt + 1
+                self.static_on = True
+            else:
+                self.static_cnt = 0
+                self.static_on = False
+                
+            self.last_distance_to_goal = distance_to_goal
+            
             logging.info(f"Episode {episode + 1} completed - Total Reward: {total_reward}")
             self.save_model(episode + 1, model_path)
 
@@ -370,27 +399,39 @@ class LQRSACPlanner(BasePlanner):
             next_state.vec[2] < box_z_min or next_state.vec[2] > box_z_max
         )
         outside_box_penalty = -2 if is_outside_box else 0
-
+        
+        # add step penalty ......
+        
+        
         # Calculate the distance to the target
         distance_to_goal = np.linalg.norm(next_state.vec[0:3] - self.end)
         progress_reward = 15 * (self.prev_distance_to_goal - distance_to_goal) #20241029 10->20
         distance_reward = 1 * (1 / (distance_to_goal + 1))  # Logarithmic distance reward  1030 0.5->1
-        if distance_to_goal < 10: # add 20241101
-            distance_reward = 2*distance_reward
-        elif distance_to_goal < 5:
-            distance_reward = 3*distance_reward
+        
+        if distance_to_goal < 10 and progress_reward > 0: # add 20241104
+            distance_reward = (11-distance_to_goal)*distance_reward
         else:
             distance_reward = distance_reward
             
+        # if self.static_on:
+        #     distance_reward = 0
+            
         # Penalties for proximity to obstacles
         self.distance_to_nearest_obstacle = np.min([np.linalg.norm(next_state.vec[0:3] - obs) for obs in self.obstacle_loc])
-        obstacle_penalty = -0.1 * np.exp(-self.distance_to_nearest_obstacle)   #20241029 0.5 -> 0.1
-        if distance_to_goal < 2: #20241101 add
-            obstacle_penalty = 0
+        obstacle_penalty = 0
+        if self.distance_to_nearest_obstacle < 3: 
+            obstacle_penalty = -5 * np.exp(-self.distance_to_nearest_obstacle)   #20241029 0.5 -> 0.1
+
         safety_reward = 0.3 if self.distance_to_nearest_obstacle > 2 else 0  # Reward for maintaining safe distance
 
         # Static penalty: Encourage movement by penalizing small displacements over multiple steps
         static_penalty = -0.5 if np.linalg.norm(state.vec[0:3] - next_state.vec[0:3]) < 0.01 else 0 #20241030
+        if distance_to_goal < 2: #20241101 add
+            obstacle_penalty = 0
+            static_penalty = 0
+        
+        #last_static_penalty = -200*self.static_cnt if (self.static_cnt > 5 and self.static_on) else 0
+        #last_static_penalty = -500*self.static_cnt if (self.static_cnt > 10 and self.static_on) else 0
 
         # Action smoothness penalty: Encourage smooth control inputs to avoid drastic changes in action
         action_smoothness_penalty = -0.02 * np.linalg.norm(action - self.previous_action)
@@ -405,7 +446,7 @@ class LQRSACPlanner(BasePlanner):
             self.first_reach_close = self.first_reach_close + 1 #. new try 20241029
             
         reach_close_reward = 100 if self.first_reach_close == 1 else 0 #. new try 20241029
-        reach_target_reward = 500 if distance_to_goal < 2 else 0
+        reach_target_reward = 500 if distance_to_goal < 1.5 else 0
 
         # Incline penalty: Penalize for extreme pitch or roll angles
         roll, pitch = state.vec[6], state.vec[7]
@@ -417,19 +458,11 @@ class LQRSACPlanner(BasePlanner):
             obstacle_penalty + safety_reward +
             static_penalty + action_smoothness_penalty +
             alignment_reward + reach_target_reward +
-            outside_box_penalty - incline_penalty + reach_close_reward
-        )
+            outside_box_penalty - incline_penalty + reach_close_reward #+ last_static_penalty
+            )
         # Update previous distance to goal for future progress calculation
         self.prev_distance_to_goal = distance_to_goal
 
-        # Normalize the total reward to avoid excessively large or small values
-        # normalization_factor = sum(abs(x) for x in [
-        #     progress_reward, distance_reward, obstacle_penalty, 
-        #     safety_reward, static_penalty, action_smoothness_penalty, 
-        #     alignment_reward, reach_target_reward, outside_box_penalty, incline_penalty, reach_close_reward
-        # ]) + 1e-5
-
-        # normalized_reward = total_reward / normalization_factor
         self.previous_action = action
         return total_reward # normalized_reward # cancel normalize
 
@@ -459,6 +492,9 @@ class LQRSACPlanner(BasePlanner):
             padded_state = state_flat[:target_dim]
         return padded_state
 
+
+
+    #parts below are utils function, can ignore them while training and inference.
     def pos_func(self, state,t):
         """
         Position function to calculate desired position at time t using the policy model.
