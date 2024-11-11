@@ -28,9 +28,19 @@ logging.basicConfig(level=logging.INFO, format='%(message)s', handlers=[
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 class LQRSACPlanner(BasePlanner):
-    def __init__(self, num_seconds, num_obstacles=20, start=None, end=None, state_dim=21, action_dim=8, lr=3e-4, gamma=0.95, tau=0.003, alpha=0.2, batch_size=512, replay_buffer_size=1000000): #bs up to 256
+    def __init__(self, num_seconds, num_obstacles=20, start=None, end=None, state_dim=21, action_dim=8, lr=3e-4, gamma=0.95, tau=0.003, alpha=0.2, batch_size=512, replay_buffer_size=10000000): #bs up to 256
+
+
+        #observation rewards
+        self.move_reward = 0
+        self.obs_reward = 0
+        self.outbox_reward = 0
+        self.reachtarget_reward = 0
+        self.action_reward = 0
+        self.episode_memory = [] 
+        self.episode_memory_success = []
         # for dynamic adjust env reset
-        self.episode_cnt = 0  # 设置混合策略切换的数值
+        
         self.reach_targe_times = 0
         self.step_cnt = 0
         # Parameters
@@ -106,6 +116,7 @@ class LQRSACPlanner(BasePlanner):
         self.static_cnt = 0
         self.last_distance_to_goal = 0 
         self.static_on = False
+        self.closest_pos = 0
         
     def setup_start(self):
         lower_bound = np.array([0, 0, -5])
@@ -122,6 +133,7 @@ class LQRSACPlanner(BasePlanner):
         random_position = lower_bound + np.random.rand(3) * (upper_bound - lower_bound)
         self.end = random_position
         print("end point:",self.end)
+        
     def setup_obstacles(self,num_obstacles=20):
         """Sets up obstacles with random positions and sizes."""
         self.memory.clear()
@@ -135,6 +147,7 @@ class LQRSACPlanner(BasePlanner):
     def remember(self, state, action, reward, next_state, done):
         self.memory.append((state, action, reward, next_state, done))
 
+            
     def initialize_weights(self, m):
         if isinstance(m, nn.Linear):
             if hasattr(m, 'out_features') and m.out_features == self.action_dim:
@@ -177,21 +190,23 @@ class LQRSACPlanner(BasePlanner):
             elif self.previous_distance_to_goal > 5:
                 noise_scale = 0.2
             elif self.previous_distance_to_goal > 2:
-                noise_scale = 0.1
+                noise_scale = 0.15
             else:
-                noise_scale = 0.05  # 靠近目标时，减少噪声
+                noise_scale = 0.1  # 靠近目标时，减少噪声
             action += np.random.normal(0, noise_scale, size=self.action_dim)
             
         if self.previous_distance_to_goal > 10:
             action = np.clip(action * self.__MAX_THRUST, -self.__MAX_THRUST, self.__MAX_THRUST)
         elif self.previous_distance_to_goal > 5:
-            action = np.clip(action * 0.5 * self.__MAX_THRUST, -0.5*self.__MAX_THRUST, 0.5*self.__MAX_THRUST)
+            action = np.clip(action * 0.8 * self.__MAX_THRUST, -0.5*self.__MAX_THRUST, 0.5*self.__MAX_THRUST)
         elif self.previous_distance_to_goal > 2:
-            action = np.clip(action * 0.3 * self.__MAX_THRUST, -0.3*self.__MAX_THRUST, 0.3*self.__MAX_THRUST)
+            action = np.clip(action * 0.5 * self.__MAX_THRUST, -0.3*self.__MAX_THRUST, 0.3*self.__MAX_THRUST)
         else:
-            action = np.clip(action * 0.15 * self.__MAX_THRUST, -0.15*self.__MAX_THRUST, 0.15*self.__MAX_THRUST)
-        if self.static_cnt >5:
+            action = np.clip(action * 0.3 * self.__MAX_THRUST, -0.15*self.__MAX_THRUST, 0.15*self.__MAX_THRUST)
+        if self.static_cnt >5 and elf.previous_distance_to_goal < 10:
             action = 2*action
+            action = np.clip(action * self.__MAX_THRUST, -self.__MAX_THRUST, self.__MAX_THRUST)
+            
         return action
 
     def update_policy(self):
@@ -249,9 +264,9 @@ class LQRSACPlanner(BasePlanner):
             target_param.data.copy_(self.tau * param.data + (1 - self.tau) * target_param.data)
 
     def train(self, env, num_episodes=500, max_steps=3000, model_path="sac_best_model.pth"):
-        max_step_increment = 512
+        max_step_increment = 1024
         self.maxstep = max_steps
-        self.episode_cnt = 0
+
         wandb.init(project="auv_RL_control_project_SAC_new", name=model_path)
         wandb.config.update({
             "state_dim": self.state_dim,
@@ -269,31 +284,31 @@ class LQRSACPlanner(BasePlanner):
         ts = 1 / scenario["ticks_per_sec"]
         last_position = None  # 用于保存上一个 episode 的结束位置
         tmp = max_steps
+        self.step_cnt = 0
         for episode in range(num_episodes):
+             
+            self.move_reward = 0
+            self.obs_reward = 0
+            self.outbox_reward = 0
+            self.reachtarget_reward = 0
+            self.action_reward = 0
             
             self.static_on = False
             self.static_cnt = 0
-            self.step_cnt = 0
             self.first_reach_close = 0
             self.epsd = episode
+            
             logging.info(f"Episode {episode + 1} starting")
             # 混合策略：判断是否达到episode_threshold，如果达到，则使用上一个结束位置   20241029
-            self.episode_cnt = self.episode_cnt + 1
+
             if self.done == True: #20241030 introduce dynamic start end point
-                self.episode_cnt = 0
+                #self.episode_memory_success.extend(self.episode_memory)
                 self.static_cnt = 0
                 self.setup_start()
                 self.setup_end()
                 self.setup_obstacles()
+                #self.memory.extend(self.episode_memory_success) #1109
                 
-            # if self.episode_cnt in range(10,15) and ((self.done == False) and self.prev_distance_to_goal<10):#20241030
-            #     # 使用上一个 episode 的结束位置继续
-            #     state = next_state
-            #     print("auv position:",state.vec[0:3])
-            #     distance_to_goal = np.linalg.norm(state.vec[0:3] - self.end)
-            #     self.prev_distance_to_goal = distance_to_goal
-            # else:
-                #self.episode_cnt = 0
             state_info = env.reset()
             env.agents["auv0"].teleport(self.start,[0,0,0])
             sensors = env.tick()
@@ -303,8 +318,8 @@ class LQRSACPlanner(BasePlanner):
             print("auv position:",state.vec[0:3])
             distance_to_goal = np.linalg.norm(self.start - self.end)
             self.prev_distance_to_goal = np.linalg.norm(self.start - self.end)
-                
-
+            self.og_distance_to_goal = np.linalg.norm(self.start - self.end)
+            self.closest_pos =  self.prev_distance_to_goal
             self.done = False     
             done = False
             step_count = 0
@@ -312,7 +327,9 @@ class LQRSACPlanner(BasePlanner):
             added_steps = 0
             max_steps = tmp
             self.distance_to_nearest_obstacle = np.min([np.linalg.norm(state.vec[0:3] - obs) for obs in self.obstacle_loc])
+            self.episode_memory = []
             while not done and step_count < max_steps:
+                self.max_stp = max_steps
                 self.step_cnt = step_count + 1
                 sensors = env.tick()
                 t = sensors["t"]
@@ -333,21 +350,22 @@ class LQRSACPlanner(BasePlanner):
                 done = np.linalg.norm(next_state.vec[0:3] - self.end) < 1
                 self.done = done
                 
+                reward = self.calculate_reward(true_state, next_state, combined_action)
+                
                 real_next_state = np.append(next_state.vec[0:], next_state.bias[0:])
                 real_next_state = np.append(real_next_state, distance_to_goal)
                 real_next_state = np.append(real_next_state, self.distance_to_nearest_obstacle)
                 real_next_state = np.append(real_next_state, done)
 
-                reward = self.calculate_reward(true_state, next_state, combined_action)
+                
+                self.closest_pos = distance_to_goal if distance_to_goal < self.closest_pos else self.closest_pos
                 total_reward += reward
-               # 如果接近终点但未达到目标，增加 max_steps
-                if distance_to_goal < 5 and step_count >= max_steps - 1 and added_steps <max_step_increment:
+               # 当接近终点但未达到目标，增加 max_steps
+                if distance_to_goal < 15 and step_count >= max_steps - 1 and added_steps <max_step_increment:
                     max_steps += 64
                     added_steps += 64
                     logging.info(f"Increasing max steps to {max_steps} for additional exploration.")
-            
-
-                
+                self.episode_memory.append((real_state, combined_action, reward, real_next_state, done))
                 self.remember(real_state, combined_action, reward, real_next_state, done)
                 self.update_policy()
                 
@@ -355,13 +373,14 @@ class LQRSACPlanner(BasePlanner):
                 wandb.log({
                     "step_count": step_count,
                     "distance_to_nearest_obstacle": self.distance_to_nearest_obstacle,
+                    "everystep_distance_to_goal":distance_to_goal
                 })
                 
                 if done:
+                    self.reach_targe_times += 1
                     wandb.log({
                         "episode": episode + 1,
-                        "reach_targe_times": self.reach_targe_times + 1
-
+                        "reach_targe_times": self.reach_targe_times
                     })
                     
                     success_path = "successful_"+str(episode)+"_"+model_path
@@ -371,14 +390,19 @@ class LQRSACPlanner(BasePlanner):
             wandb.log({
                 "episode": episode + 1,
                 "total_reward": total_reward,
-                "distance to goal": distance_to_goal
+                "distance to goal": distance_to_goal,
+                "episode_movement_reward": self.move_reward,
+                "episode_obstacle_reward": self.obs_reward,
+                "episode_out_of_box_penalty":  self.outbox_reward,
+                "episode_reach_target_reward": self.reachtarget_reward,
+                "episode_action_reward": self.action_reward #1109
             })
-            # if abs(self.last_distance_to_goal - distance_to_goal) < 10 and episode > 300 and distance_to_goal < 10:
-            #     self.static_cnt =  self.static_cnt + 1
-            #     self.static_on = True
-            # else:
-            #     self.static_cnt = 0
-            #     self.static_on = False
+            if abs(self.last_distance_to_goal - distance_to_goal) < 10 and episode > 300 and distance_to_goal < 10:
+                self.static_cnt =  self.static_cnt + 1
+                self.static_on = True
+            else:
+                self.static_cnt = 0
+                self.static_on = False
                 
             self.last_distance_to_goal = distance_to_goal
             
@@ -391,7 +415,21 @@ class LQRSACPlanner(BasePlanner):
         obstacle_reward = self._obstacle_reward(next_state)
         out_of_box_penalty = self._out_of_box_penalty(next_state)
         reach_target_reward = self._reach_target_reward(next_state)
-        
+        action_smooth_reward = self._action_smooth_reward(state,action)
+        self.move_reward += movement_reward
+        self.obs_reward += obstacle_reward
+        self.outbox_reward += out_of_box_penalty
+        self.reachtarget_reward += reach_target_reward
+        self.action_reward += action_smooth_reward
+        wandb.log({
+            "step_count":self.step_cnt,
+            "movement_reward": movement_reward,
+            "obstacle_reward": obstacle_reward,
+            "out_of_box_penalty": out_of_box_penalty,
+            "reach_target_reward": reach_target_reward,
+            "action_smooth_reward": action_smooth_reward
+        })
+
         total_reward = movement_reward + obstacle_reward + out_of_box_penalty + reach_target_reward
         
         self.prev_distance_to_goal = np.linalg.norm(next_state.vec[0:3] - self.end)
@@ -399,55 +437,107 @@ class LQRSACPlanner(BasePlanner):
         return total_reward
     
     #movement
+    def _action_smooth_reward(self, state, action):
+# 这是环境中agent的configuration里关于推进器位置和方向的描述：
+#         # True thruster locations
+#         self.thruster_p = np.array([[18.18, -22.14, -4],
+#                                     [18.18, 22.14, -4],
+#                                     [-31.43, 22.14, -4], # First element should be -31.43
+#                                     [-31.43, -22.14, -4], # First element should be -31.43
+#                                     [7.39, -18.23, -0.21], # First element should be 7.39
+#                                     [7.39, 18.23, -0.21], # First element should be 7.39
+#                                     [-20.64, 18.23, -0.21],
+#                                     [-20.64, -18.23, -0.21]])/100
+
+#         # Thruster directions
+#         self.thruster_d = np.array([[0, 0, 1],
+#                                     [0, 0, 1],
+#                                     [0, 0, 1],
+#                                     [0, 0, 1],
+#                                     [np.sqrt(2), np.sqrt(2), 0],
+#                                     [np.sqrt(2), -np.sqrt(2), 0],
+#                                     [np.sqrt(2), np.sqrt(2), 0],
+#                                     [np.sqrt(2), -np.sqrt(2), 0]])
+        
+        # 垂直方向推力为 Thrusters 1-4，主要影响 z 轴
+        vertical_thrust = np.array([action[0], action[1], action[2], action[3]])
+        z_movement = np.mean(vertical_thrust)  # z 轴运动由垂直推进器贡献
+    
+        # 水平方向推力为 Thrusters 5-8，影响 x 和 y 轴
+        x_movement = (action[4] * np.sqrt(2) + action[5] * np.sqrt(2) + action[6] * np.sqrt(2) + action[7] * np.sqrt(2)) / 4
+        y_movement = (action[4] * np.sqrt(2) - action[5] * np.sqrt(2) + action[6] * np.sqrt(2) - action[7] * np.sqrt(2)) / 4
+    
+        # 三维合成动作向量
+        action_direction = np.array([x_movement, y_movement, z_movement])
+        action_direction /= np.linalg.norm(action_direction) + 1e-5  # 归一化
+    
+        # 计算目标方向向量
+        goal_direction = (self.end - state.vec[0:3]) / (np.linalg.norm(self.end - state.vec[0:3]) + 1e-5)
+    
+        # 计算动作与目标方向的对齐度
+        alignment = np.dot(goal_direction, action_direction)
+    
+        # 动作变化量，用于鼓励动作平滑
+        action_change = np.linalg.norm(action - self.previous_action)
+    
+        # 计算对齐和平滑的综合奖励
+        smooth_alignment_reward = alignment - 0.01 * action_change
+        # 更新上一动作
+        return smooth_alignment_reward
+        
     def _movement_reward(self, state, next_state, action):
         distance_to_goal = np.linalg.norm(next_state.vec[0:3] - self.end)
-        distance_reward = 15 * (1 / (distance_to_goal + 1) - 1 / (self.og_distance_to_goal + 1))
-        
-        action_smoothness_penalty = -0.02 * np.linalg.norm(action - self.previous_action)
-        
-        energy_penalty = -0.1 * (1 + self.step_cnt / 1000) # 每一步都产生一个小的负奖励
-        
-        goal_direction = (self.end - state.vec[0:3]) / (np.linalg.norm(self.end - state.vec[0:3]) + 1e-5)
-        velocity_direction = next_state.vec[3:6] / (np.linalg.norm(next_state.vec[3:6]) + 1e-5)
-        alignment_reward = np.clip(np.dot(goal_direction, velocity_direction), 0, 1)**2
-        
-        static_penalty = -0.5 if np.linalg.norm(state.vec[0:3] - next_state.vec[0:3]) < 0.01 else 0
-        
-        return distance_reward + action_smoothness_penalty + energy_penalty + alignment_reward + static_penalty
+        distance_reward = 15 * (self.prev_distance_to_goal - distance_to_goal)
+        energy_penalty = -0.1 #* (1 + self.step_cnt / 100) # 每一步都产生一个小的负奖励####pending
+        static_penalty = -0.3 if np.linalg.norm(state.vec[0:3] - next_state.vec[0:3]) < 0.02 else 0
+        return distance_reward  + energy_penalty  + static_penalty 
     
     def _obstacle_reward(self, next_state):
-        safe_distance_threshold = 2  # 安全距离
-        self.distance_to_nearest_obstacle = np.min([np.linalg.norm(next_state.vec[0:3] - obs) for obs in self.obstacle_loc])
-        
-        if self.distance_to_nearest_obstacle < safe_distance_threshold:
-            obstacle_penalty = -5 * np.exp(-self.distance_to_nearest_obstacle)
+        # 找到距离最近的障碍物位置和最小距离
+        distances_to_obstacles = [np.linalg.norm(next_state.vec[0:3] - obs) for obs in self.obstacle_loc]
+        min_distance = np.min(distances_to_obstacles)
+        closest_obstacle = self.obstacle_loc[np.argmin(distances_to_obstacles)]
+        # 获取智能体速度向量
+        velocity_vector = next_state.vec[3:6]
+        # 计算智能体指向最近障碍物的方向向量并归一化
+        direction_to_obstacle = (closest_obstacle - next_state.vec[0:3]) / (min_distance + 1e-5)
+        # 计算指向最近障碍物的相对速度
+        relative_speed = np.dot(velocity_vector, direction_to_obstacle)
+        # 动态调整安全距离阈值，基于相对速度，值范围在1到5之间
+        safe_distance_threshold = max(1, min(5, 3 + relative_speed * 0.1))
+        # 计算障碍物惩罚
+        if min_distance < safe_distance_threshold:
+            obstacle_penalty = -5 * np.exp(-min_distance)
         else:
-            obstacle_penalty = 0.3  # 安全距离内给予正奖励
+            obstacle_penalty = 0.05  # 超出安全距离时给予小的正奖励
         
         return obstacle_penalty
     
     # 出界类惩罚
-    def _out_of_box_penalty(self, next_state):
+    def _out_of_box_penalty(self, next_state): #   分级 考虑 碰撞 剐蹭。。。
 
         is_outside_box = (
             next_state.vec[0] < self.bottom_corner[0] or next_state.vec[0] > self.top_corner[0] or
             next_state.vec[1] < self.bottom_corner[1] or next_state.vec[1] > self.top_corner[1] or
             next_state.vec[2] < self.bottom_corner[2] or next_state.vec[2] > self.top_corner[2]
         )
-        return -2 if is_outside_box else 0
+        return -3 if is_outside_box else 0  # 2--3--1
     
-
     def _reach_target_reward(self, next_state):
         distance_to_goal = np.linalg.norm(next_state.vec[0:3] - self.end)
-        
+        if distance_to_goal < 10 and self.first_reach_close <= 1:
+            self.first_reach_close = self.first_reach_close + 1 #. new try 20241029  
+            
         if distance_to_goal < 1:
-            reach_target_reward = 500
-        elif distance_to_goal < 10:
-            reach_target_reward = 100 / (distance_to_goal + 1)
+            reach_target_reward = 20000
         else:
             reach_target_reward = 0
-        
-        return reach_target_reward
+            
+        if distance_to_goal < 10 and self.first_reach_close == 1:
+            first_close_reward = 2000 / (distance_to_goal + 1)
+        else:
+            first_close_reward = 0
+        return reach_target_reward + first_close_reward
 
     def save_model(self, episode, path='sac_best_model.pth'):
         torch.save({
@@ -475,9 +565,6 @@ class LQRSACPlanner(BasePlanner):
             padded_state = state_flat[:target_dim]
         return padded_state
 
-# function below are not used in training process, can skip them
-
-    
     def pos_func(self, state,t):
         """
         Position function to calculate desired position at time t using the policy model.
@@ -506,7 +593,6 @@ class LQRSACPlanner(BasePlanner):
         distance_to_nearest_obstacle = np.min([np.linalg.norm(state.vec[0:3] - obs) for obs in self.obstacle_loc])
         distance_to_goal = np.linalg.norm(state.vec[0:3] - self.end)
         return distance_to_goal,distance_to_nearest_obstacle
-
 
     @property
     def center(self):
