@@ -1,0 +1,58 @@
+seed: 42
+
+environment:
+  # 指定使用哪个环境难度（1、2、3 或 X）
+  level: 1
+  levels:
+    "1":
+      name: "Level 1: 小尺寸、浅水、弱洋流、少量固定障碍"
+      area: [100, 100]         # 单位：米（长×宽）
+      depth_range: [0, 30]       # 水深：0~30m
+      obstacles:
+        count_range: [5, 10]     # 障碍数量随机在 5~10 之间
+        fixed: true
+        shapes: ["cylinder", "box"]
+      current:
+        speed: 0.2             # 0.2 m/s
+        direction: [1, 0, 0]     # 固定方向（例如从左向右）
+      # 若需要固定起点和终点，可直接给出
+      start: [10, 10, -5]
+      end: [90, 90, -5]
+      start_end_pairs: 5       # 实验时可生成多组（例如 5~10 组）起终点
+    "2":
+      name: "Level 2: 中等尺寸、适度洋流、少量动态障碍"
+      area: [300, 300]
+      depth_range: [0, 80]
+      obstacles:
+        static_count: 15
+        dynamic_count_range: [2, 5]
+      current:
+        speed: 0.5
+        variation: "zone"      # 可在不同区域略有变化
+      start_end_pairs: 5
+    "3":
+      name: "Level 3: 大型深水场景、强洋流、多样障碍（含动态）"
+      area: [1000, 1000]
+      depth_range: [0, 200]
+      obstacles:
+        count_range: [30, 50]
+        dynamic: true
+      current:
+        speed_range: [0.8, 1.5]
+        disturbance: true       # 中途随机扰动
+      start_end_pairs: 3
+    "X":
+      name: "Level X: 自定义极端场景"
+      custom: true
+      # DIY
+
+metrics:
+  path_length: true
+  time_to_completion: true
+  collision_count: true
+  success_rate: true
+  energy_consumption: true
+  smoothness: true
+  planning_time: true
+  robustness: true
+  multi_goal_completion: true
