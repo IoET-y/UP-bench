@@ -4,7 +4,7 @@ include various algorithms for state estimation, low-level control, and planning
 to use, and the HoveringAUV is easy to control, making this a perfect platform for experimenting and 
 testing of various AUV path planning algorithms.
 
-The comprehensive version of this respiratory is underconstruction, will be prepared in one week!
+The completed version of this Repository is under construction, will be prepared in one week!
 # Python Module
 
 
