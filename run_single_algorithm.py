@@ -6,15 +6,20 @@ import numpy as np
 import seaborn as sns
 import holoocean
 from tqdm import tqdm
-from auv_planning.planning.SAC_2025 import SACPlanner
 from auv_planning.planning.ASTAR_2025 import AStarPlanner
-from auv_planning.planning.RRT_2025 import RRTPlanner
 from auv_planning.planning.DJS_2025 import DijkstraPlanner
+from auv_planning.planning.RRT_2025 import RRTPlanner
 from auv_planning.planning.GA_2025 import GeneticPlanner
-from auv_planning.planning.ACO_2025 import ACOPlanner
 from auv_planning.planning.FA_2025 import FireflyPlanner
+from auv_planning.planning.ACO_2025 import ACOPlanner
+
+from auv_planning.planning.RTASTART_2025 import RTAAStarPlanner
+from auv_planning.planning.RRTOL_2025 import OnlineRRTStarPlanner
+from auv_planning.planning.PFM_2025 import PFMPlanner
+from auv_planning.planning.Theta_2025 import RSAPPlanner
+from auv_planning.planning.SAC_2025 import SACPlanner
 from auv_planning.planning.SAC_LQR_20251 import SACLQRPlanner
-from auv_planning.planning import Traj
+
 from plotter import Plotter
 from auv_planning.holoocean_config import scenario
 from auv_planning.custom_env import custom_environment
