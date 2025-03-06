@@ -1,0 +1,8 @@
+3D LQR Episode 1 starting
+Start: [-0.07325  0.02    -9.6821 ], Goal: [71 25 -9]
+Episode 1 completed - Path Length: 58.56123866420239, Steps: 1024, Collisions: 0
+3D LQR Episode 2 starting
+Start: [-0.07325  0.02    -9.6821 ], Goal: [ 83  89 -31]
+Episode 2 completed - Path Length: 62.3309494840214, Steps: 1024, Collisions: 0
+3D LQR Episode 3 starting
+Start: [-0.07325  0.02    -9.6821 ], Goal: [ 97  20 -11]
