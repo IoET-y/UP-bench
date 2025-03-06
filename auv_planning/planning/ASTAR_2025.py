@@ -1,4 +1,4 @@
-# astar_planner_3d_lqr.py
+#auv_planning/planning/ASTAR_2025.py
 
 import numpy as np
 import math
