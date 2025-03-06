@@ -1,4 +1,4 @@
-# genetic_planner_3d_lqr.py
+# auv_planning/planning/GA_2025.py
 
 import numpy as np
 import math
