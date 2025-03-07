@@ -1,54 +1,60 @@
+Here’s a stable and structured README.md file incorporating the benchmarking, individual planner execution, and GUI-based simulation functionalities.
+
 # UP-Bench: A Benchmark for Underwater Path Planning Algorithms
 
 **Author:** Di Yang, Yanhai Xiong  
 **Affiliation:** The College of William and Mary  
 **GitHub Repository:** [UP-Bench on GitHub](https://github.com/IoET-y/UP-bench)  
 
-## Overview
-**UP-Bench** is an open-source benchmarking platform for **underwater path planning** algorithms, providing a **unified evaluation framework**, **automated performance assessment**, and **reproducible experimental workflows**. Built on the **HoloOcean** simulation platform, UP-Bench incorporates realistic underwater dynamics, including:
-- 🌊 **Ocean currents**
-- 🏗️ **Static and dynamic obstacles**
-- 📡 **Sensor models**
+## 🌊 Overview
+**UP-Bench** is an open-source benchmarking framework for evaluating **underwater path planning** algorithms. It provides:
+- **Unified evaluation metrics** to assess performance across different methods.
+- **Automated benchmarking** for classical, evolutionary, and RL-based algorithms.
+- **Realistic underwater simulation** with ocean currents and obstacles via **HoloOcean**.
+- **GUI-based execution** to allow interactive configuration and algorithm selection.
 
-The benchmark supports a wide range of **path planning algorithms**, including:
-- **Classical algorithms**: A*, Dijkstra, RRT
-- **Evolutionary methods**: Genetic Algorithm (GA), Ant Colony Optimization (ACO)
-- **Reinforcement Learning (RL)**: Soft Actor-Critic (SAC), Hybrid SAC+A*+LQR
+The benchmark includes **multiple planning algorithms**:
+- **Classical:** A*, Dijkstra, RRT
+- **Evolutionary:** Genetic Algorithm (GA), Firefly Algorithm (FA), Ant Colony Optimization (ACO)
+- **Reinforcement Learning (RL):** Soft Actor-Critic (SAC), Hybrid SAC+A*+LQR
 
-## 🔥 Key Features
-✅ **3D underwater path planning** with realistic dynamics and ocean currents  
-✅ **Standardized evaluation metrics**: Path efficiency, success rate, collision rate, energy consumption, computational cost  
-✅ **Automated benchmarking tools** for systematic algorithm comparisons  
-✅ **Modular API** allowing easy integration of new algorithms  
+---
+
+## 🚀 Key Features
+✅ **3D underwater path planning** with physics-based simulation  
+✅ **Standardized evaluation metrics**: Path efficiency, energy consumption, computational cost  
+✅ **Automated benchmarking**: Runs all planners in a structured experiment  
+✅ **GUI-based execution**: Allows users to configure and run simulations easily  
 
 ---
 
 ## 📌 Supported Path Planning Algorithms
 
-### 🏛️ Classical Methods
-- **A\***: Guarantees optimality with heuristic search.
-- **Dijkstra**: Finds the shortest path using uniform cost search.
-- **RRT**: Efficient for high-dimensional search spaces.
+### 🔍 Classical Methods
+- **A\***: Optimal heuristic-based search.
+- **Dijkstra**: Uniform cost search for shortest path.
+- **RRT**: Randomized search in high-dimensional spaces.
 
 ### 🧬 Evolutionary Methods
-- **GA**: Optimizes paths considering multiple objectives.
-- **ACO**: Uses pheromone-based reinforcement for path optimization.
+- **GA**: Evolutionary optimization-based path search.
+- **FA**: Firefly algorithm for multi-modal optimization.
+- **ACO**: Ant colony optimization for global pathfinding.
 
 ### 🤖 Reinforcement Learning
-- **SAC**: Learns policies for dynamic underwater environments.
-- **SAC+A***: Uses SAC for sub-goal selection and A* for efficient path generation.
-- **SAC+A*+LQR**: Hybrid RL method with **LQR tracking**, reducing training time significantly.
+- **SAC**: Deep RL for dynamic environments.
+- **SAC+A***: Hybrid RL-based planning with heuristic A* search.
+- **SAC+A*+LQR**: RL combined with **LQR tracking**, improving training speed.
 
 ---
 
 ## 📊 Evaluation Metrics
-UP-Bench evaluates path planning algorithms based on:
+UP-Bench evaluates planners based on:
 1. **Path Length** 📏 – Measures trajectory efficiency.
-2. **Execution Time** ⏳ – Time required for the AUV to complete navigation.
-3. **Planning Computation Time** 💻 – Time needed to compute/re-plan paths.
+2. **Execution Time** ⏳ – Time taken to reach the target.
+3. **Planning Computation Time** 💻 – Time needed to generate paths.
 4. **Collision Rate** ⚠️ – Percentage of paths resulting in collisions.
 5. **Success Rate** 🎯 – Percentage of successful goal reaches.
-6. **Energy Consumption** 🔋 – Total energy expended during navigation.
+6. **Energy Consumption** 🔋 – Total energy used during navigation.
 7. **Smoothness** 🛶 – Measures trajectory deviation and control efficiency.
 
 ---
@@ -77,25 +83,35 @@ pip install -r requirements.txt
 
 ⸻
 
-📌 Usage
+🔥 Running Benchmarks
 
-🔍 Running a Path Planning Algorithm
+📈 Running Full Benchmark
 
-To execute a specific path planning algorithm:
+To evaluate all planners:
 
-python run.py --algorithm ACO --env OpenWater
+python benchmark.py --max_step 5000 --BS 32
 
-Available options for --algorithm: A*, Dijkstra, RRT, GA, ACO, SAC, real-time adapted classical algorithm and SAC+A*, SAC+A*+LQR.
+This script iterates over all available planning algorithms, evaluates them, and outputs the success rate, execution time, path length, and other metrics.
 
-📈 Benchmarking & Evaluation
 
-Run benchmarking experiments:
 
-python benchmark.py --num-runs 50 --env OpenWater
+🎯 Running a Single Planner Demo
+
+To run a specific path planning algorithm:
+
+python run_single_algorithm.py --route ACO --num_episodes 100 --max_step 5000
+
+Available options for --route:
+	•	astar
+	•	rrt
+	•	djs (Dijkstra)
+	•	GA (Genetic Algorithm)
+	•	FA (Firefly Algorithm)
+	•	ACO (Ant Colony Optimization)
+	•	SAC_LQR (RL with LQR tracking)
+	•	sac (Soft Actor-Critic)
 
 🎨 Visualizing Results
-
-Use the built-in visualization tools:
 
 python visualize.py --log-dir logs/
 
@@ -103,11 +119,27 @@ python visualize.py --log-dir logs/
 
 ⸻
 
-🚀 Future Work
-	•	🌊 Advanced Environmental Dynamics: Introducing variable water densities, wave disturbances, and temperature gradients.
-	•	🤖 Multi-AUV Coordination: Swarm-based path planning.
-	•	🛠 Real-World Validation: Field trials with physical AUVs.
-	•	📊 Expanded Sensor Modalities: Incorporating high-fidelity sonar imaging, acoustic localization, and sensor fusion.
+🖥️ GUI-Based Simulator
+
+A Graphical User Interface (GUI) is available to configure and run simulations easily.
+
+Launch the GUI:
+
+python UI.py
+
+GUI Features:
+	•	Algorithm selection: Choose planners interactively.
+	•	Simulation parameters: Adjust number of obstacles and targets.
+	•	Training options: Configure episode count, batch size, and RL model path.
+	•	Live execution: Run the planner and monitor real-time performance.
+
+
+⸻
+
+🔬 Future Work
+	•	🌊 Enhanced Environmental Dynamics: Adding wave disturbances and dynamic obstacles.
+	•	🤖 Multi-AUV Coordination: Collaborative path planning for AUV swarms.
+	•	🛠 Real-World Deployment: Testing the framework on real underwater robots.
 
 ⸻
 
@@ -129,12 +161,21 @@ If you use UP-Bench in your research, please cite:
 
 📝 License
 
-UP-Bench is an open-source project. Refer to the LICENSE file for details.
+UP-Bench is an open-source project under the MIT License.
 
 ⸻
 
-🚀 UP-Bench aims to standardize algorithmic comparisons and accelerate research in underwater path planning! 🌊
+🚀 UP-Bench standardizes underwater path planning research and accelerates algorithm development! 🌊
 🔗 GitHub Repository
 📩 Contributions and feedback are welcome!
 
-This markdown-formatted README provides a **structured, professional, and visually appealing** overview of UP-Bench. Let me know if you need modifications! 🚀
+---
+
+### 🔥 **Key Enhancements**
+- **Includes benchmarking execution**
+- **Supports running a single planner**
+- **Describes GUI functionality**
+- **Provides example output formatting**
+- **Explains visualization tools**
+
+This README is now **comprehensive, stable, and structured**! Let me know if you need refinements. 🚀
