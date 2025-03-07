@@ -19,20 +19,17 @@ from .rl_utils import (calculate_ocean_current, calculate_action_effect,
                        normalize_action, denormalize_action)
 from .rl_rewards import calculate_reward
 
-# 假设 BasePlanner 定义在同目录下的 base 模块中
+
 from .base import BasePlanner
 
 
-# ---------------------------
-# 定义辅助状态类，与老 SAC 算法一致
 class EnvState:
     def __init__(self, location, rotation, velocity, lasers):
-        # 拼接各传感器数据为一个向量
+
         self.vec = np.concatenate([location, rotation, velocity, lasers])
 
 
-# ---------------------------
-# 优先经验回放缓冲区，与老 SAC 算法一致
+
 class PrioritizedReplayBuffer:
     def __init__(self, capacity, alpha=0.6):
         self.capacity = capacity
@@ -75,12 +72,11 @@ class PrioritizedReplayBuffer:
         return len(self.buffer)
 
 
-# ---------------------------
-# 策略网络，与老 SAC 算法一致
+
 class PolicyNetwork(nn.Module):
     def __init__(self, state_dim, action_dim, max_action):
         super(PolicyNetwork, self).__init__()
-        self.max_action = max_action  # 在此处代表局部子目标偏移的最大幅度（例如 10 米）
+        self.max_action = max_action  
         self.net = nn.Sequential(
             nn.Linear(state_dim, 256),
             nn.LayerNorm(256),
@@ -115,8 +111,7 @@ class PolicyNetwork(nn.Module):
         return action, log_prob
 
 
-# ---------------------------
-# Q网络，与老 SAC 算法一致
+
 class QNetwork(nn.Module):
     def __init__(self, state_dim, action_dim):
         super(QNetwork, self).__init__()
@@ -133,21 +128,19 @@ class QNetwork(nn.Module):
         return self.net(x)
 
 
-# ---------------------------
-# SAC+LQR 分层规划器
 class SACLQRPlanner(BasePlanner):
     def __init__(self, num_seconds, state_dim=27, action_dim=3,
                  sensor_range=10.0, grid_resolution=0.5, max_steps = 2000, lr=2e-3, gamma=0.95, tau=0.02, batch_size=128,
                  replay_buffer_size=100000, config_file="./config_all.yaml"):
         """
-        参数说明：
-          - num_seconds: 总运行时间
-          - state_dim: 用于策略输入的状态维度
-          - action_dim: SAC agent 输出的局部目标偏移维度（3D）
-          - lr, gamma, tau, batch_size, replay_buffer_size: SAC 相关超参数
-          - config_file: 配置文件路径（用于设置环境种子等参数）
+        Parameter description:
+        - num_seconds: total running time
+        - state_dim: state dimension for policy input
+        - action_dim: local target offset dimension (3D) output by SAC agent
+        - lr, gamma, tau, batch_size, replay_buffer_size: SAC related hyperparameters
+        - config_file: configuration file path (used to set parameters such as environment seed)
         """
-        # 加载配置文件（若有）
+
         config_file = os.path.join(os.path.dirname(__file__), "config_all.yaml")
         with open(config_file, 'r', encoding="utf-8") as f:
             self.config = yaml.safe_load(f)
@@ -157,7 +150,6 @@ class SACLQRPlanner(BasePlanner):
         torch.manual_seed(seed)
 
         self.max_steps = max_steps
-        # SAC 超参数
         self.gamma = gamma
         self.lr = lr
         self.tau = tau
@@ -168,12 +160,9 @@ class SACLQRPlanner(BasePlanner):
         self.beta = 0.4
         self.beta_increment_per_sampling = 0.001
 
-        # 高层 SAC 目标：选择局部子目标，局部目标偏移范围设定为感知范围（10 米）
         self.max_local_offset = np.array([3.0, 3.0, 3.0])
-        # 终点位置将在每个 episode 开始时从环境中获取
         self.end = None
 
-        # SAC 网络及优化器
         self.state_dim = state_dim
         self.action_dim = action_dim
         self.target_entropy = -np.prod(action_dim) * 1
@@ -197,7 +186,6 @@ class SACLQRPlanner(BasePlanner):
         self.q_optimizer1 = optim.Adam(self.q_net1.parameters(), lr=self.lr)
         self.q_optimizer2 = optim.Adam(self.q_net2.parameters(), lr=self.lr)
 
-        # 初始化 LQR 控制器参数（AUV 动力学采用双积分模型）
         self.ticks_per_sec = 100
         self.ts = 1.0 / self.ticks_per_sec
         I3 = np.eye(3)
@@ -214,7 +202,6 @@ class SACLQRPlanner(BasePlanner):
         P = scipy.linalg.solve_discrete_are(A, B, Q, R)
         self.K = np.linalg.inv(R + B.T @ P @ B) @ (B.T @ P @ A)
 
-        # 规划网格参数（用于 A*），这里参考 AStarPlanner 的设置
         self.grid_resolution = grid_resolution  # 可以调小以适应局部范围
         self.x_min = 0
         self.x_max = 300
@@ -224,10 +211,8 @@ class SACLQRPlanner(BasePlanner):
         self.z_max = 0
         self.obstacle_radius = 5  # 障碍“膨胀”半径
 
-        # 感知范围（局部规划时只考虑 10 米内的障碍物）
         self.sensor_range = sensor_range
 
-        # 记录评价指标（路径长度、碰撞数、能耗、平滑度等）
         self.episode_out_of_box_penalty = 0.0
         self.episode_energy_penalty = 0.0
         self.episode_smoothness_penalty = 0.0
@@ -246,7 +231,7 @@ class SACLQRPlanner(BasePlanner):
         self.episode_smoothness = 0
         self.static_counter = 0
 
-        # 其他状态记录
+
         self.previous_action = np.zeros(action_dim)
         self.current_time = 0.0
 
@@ -264,8 +249,7 @@ class SACLQRPlanner(BasePlanner):
             if m.bias is not None:
                 nn.init.constant_(m.bias, 0)
 
-    # ---------------------------
-    # 以下为 A* 规划相关函数（与 AStarPlanner 类似）
+
     def world_to_index(self, pos):
         ix = int((pos[0] - self.x_min) / self.grid_resolution)
         iy = int((pos[1] - self.y_min) / self.grid_resolution)
@@ -290,7 +274,7 @@ class SACLQRPlanner(BasePlanner):
         nz = int((self.z_max - self.z_min) / self.grid_resolution)
         grid = np.zeros((nx, ny, nz), dtype=int)
         for obs in obstacles:
-            # 仅对在规划区域内的障碍物标记
+
             if not (self.x_min <= obs[0] <= self.x_max and
                     self.y_min <= obs[1] <= self.y_max and
                     self.z_min <= obs[2] <= self.z_max):
@@ -319,8 +303,8 @@ class SACLQRPlanner(BasePlanner):
             return self.f < other.f
 
     def plan_path(self, start, goal, obstacles):
-        """
-        使用 A* 算法规划路径
+         """
+        Use A* algorithm to plan the path
         """
         grid = self.create_obstacle_grid(obstacles)
         nx, ny, nz = grid.shape
@@ -374,7 +358,7 @@ class SACLQRPlanner(BasePlanner):
                             heapq.heappush(open_list, neighbor_node)
         if not found:
             return None
-        # 回溯路径
+        
         path_indices = []
         node = goal_node
         while node is not None:
@@ -383,20 +367,7 @@ class SACLQRPlanner(BasePlanner):
         path_indices.reverse()
         path = [self.index_to_world(idx) for idx in path_indices]
         return path
-    #
-    # def smooth_path(self, path, smoothing_factor=2.0, num_points=100):
-    #     """
-    #     对离散路径进行样条平滑
-    #     """
-    #     if len(path) < 3:
-    #         return path
-    #
-    #     path_array = np.array(path).T  # shape (3, n)
-    #     tck, u = splprep(path_array, s=smoothing_factor)
-    #     u_new = np.linspace(0, 1, num_points)
-    #     smooth_points = splev(u_new, tck)
-    #     smooth_path = np.vstack(smooth_points).T
-    #     return [pt for pt in smooth_path]
+
     def smooth_path(self, path, smoothing_factor=1.0, num_points=100):
         """
         对路径进行样条插值平滑
@@ -415,50 +386,47 @@ class SACLQRPlanner(BasePlanner):
         smooth_points = splev(u_new, tck)
         smooth_path = np.vstack(smooth_points).T
         return [pt for pt in smooth_path]
-    # ---------------------------
-    # LQR 控制器：根据当前状态和期望状态（当前位置及期望速度对应于当前规划路径的目标点），计算控制输入
+      
+    # #LQR controller: Calculate the control input based on the current state and the desired state (the current position and desired speed correspond to the target point of the current planned path)
     def lqr_control(self, current_pos, current_velocity, waypoint, desired_velocity):
         # 构造状态向量：x = [position, velocity]
         x_current = np.hstack([current_pos, current_velocity])
         x_des = np.hstack([waypoint, desired_velocity])
         error_state = x_current - x_des
         u = -self.K.dot(error_state)
-        # 限制控制输入
         u = np.clip(u, -20, 20)  # 这里使用 20 为最大线性加速度，可根据需要调整
         return u
 
-    # ---------------------------
-    # 局部路径跟踪：利用 LQR 控制器沿规划好的局部路径跟踪，直到接近局部目标或超步长
     def follow_local_path(self, env, path, local_goal, max_steps=50):
         """
-        参数：
-          - env: 环境对象
-          - path: 局部平滑路径（列表，每个为 np.array([x,y,z])）
-          - local_goal: 本次局部规划的目标点（绝对坐标）
-          - max_steps: 本次局部控制最大步数
-        返回：
-          - final_state: 跟踪结束后的 AUV 位置
-          - total_reward: 累计奖励
-          - steps_taken: 实际控制步数
+        Parameters:
+        - env: environment object
+        - path: local smooth path (list, each is np.array([x,y,z]))
+        - local_goal: the target point of this local planning (absolute coordinates)
+        - max_steps: the maximum number of steps for this local control
+        Returns:
+        - final_state: the position of the AUV after the tracking ends
+        - total_reward: the accumulated reward
+        - steps_taken: the actual number of control steps
         """
         step_count = 0
         total_reward = 0.0
         prev_u = None
-        # 获取当前状态
+        # Get the current status
         current_pos = env.location.copy()
         current_velocity = env.velocity.copy()
         path_idx = 0
         while step_count < max_steps:
-            # 若已到达局部目标（距离小于 2 米），则结束
+            # If the local target has been reached (the distance is less than 2 meters), then end
             if np.linalg.norm(current_pos - local_goal) < 1:
                 break
-            # 若路径规划完毕，则以局部目标作为期望点
+            # If the path planning is completed, the local target is used as the expected point
             if path_idx >= len(path):
                 waypoint = local_goal
                 v_des = np.zeros(3)
             else:
                 waypoint = path[path_idx]
-                # 设置期望速度（例如 3 m/s）沿路径方向
+                # Set the desired speed (e.g. 3 m/s) along the path
                 if path_idx < len(path) - 1:
                     desired_speed = 2.0
                     direction = path[path_idx+1] - waypoint
@@ -470,26 +438,24 @@ class SACLQRPlanner(BasePlanner):
                     v_des = desired_speed * direction
                 else:
                     v_des = np.zeros(3)
-                # 当接近当前路径点时，切换下一个
+                # When approaching the current path point, switch to the next
                 if np.linalg.norm(current_pos - waypoint) < 1:
                     path_idx += 1
                     continue
 
-            # 计算 LQR 控制输入
+            # Calculate LQR control input
             u = self.lqr_control(current_pos, current_velocity, waypoint, v_des)
-            # 构造完整动作：前三个为线性加速度，后三个角加速度置 0
+
             action = np.concatenate([u, np.zeros(3)])
             sensors = env.tick(action)
             env.update_state(sensors)
             new_pos = env.location.copy()
             next_dist_to_goal = np.linalg.norm(self.end - new_pos)
 
-            # 计算奖励（调用下文的 calculate_reward 函数）
             state_vec = np.hstack([current_pos, env.rotation, current_velocity, env.lasers])
             next_state_vec = np.hstack([new_pos, env.rotation, env.velocity, env.lasers])
             r, pr, ar, sp, bonus, sm_pen = calculate_reward(self,state_vec, next_state_vec, u)
             total_reward += r
-            # 更新评价指标
             distance_moved = np.linalg.norm(new_pos - current_pos)
 
             if next_dist_to_goal < 2:
@@ -497,7 +463,6 @@ class SACLQRPlanner(BasePlanner):
                 self.done = 1
                 break
 
-            # 碰撞检测：若距离任一障碍物小于 5 米，则记一次碰撞
             for obs in env.obstacles:
                 if np.linalg.norm(new_pos - np.array(obs)) < 2.0:
                     break
@@ -509,14 +474,11 @@ class SACLQRPlanner(BasePlanner):
         return current_pos, total_reward, step_count
 
 
-    # ---------------------------
-    # SAC 相关方法
     def select_action(self, state, inference=False):
         state_tensor = torch.FloatTensor(state).unsqueeze(0).to(self._get_device())
         with torch.no_grad():
             normalized_action, _ = self.policy_net.sample(state_tensor)
         normalized_action = normalized_action.cpu().numpy()[0]
-        # 保证局部偏移在 [-max_local_offset, max_local_offset] 内
         action = np.clip(normalized_action, -self.max_local_offset, self.max_local_offset)
         return action
 
@@ -571,7 +533,6 @@ class SACLQRPlanner(BasePlanner):
             alpha_loss.backward()
             self.alpha_optimizer.step()
             self.alpha = self.log_alpha.exp().item()
-        # 更新目标网络
         for target_param, param in zip(self.target_q_net1.parameters(), self.q_net1.parameters()):
             target_param.data.copy_(self.tau * param.data + (1 - self.tau) * target_param.data)
         for target_param, param in zip(self.target_q_net2.parameters(), self.q_net2.parameters()):
@@ -596,17 +557,17 @@ class SACLQRPlanner(BasePlanner):
             'optimizer_q2': self.q_optimizer2.state_dict(),
         }, model_path)
 
-    # ---------------------------
-    # 主训练流程：高层 SAC 与低层 LQR 控制协同工作
+
+    # Main training process: high-level SAC and low-level LQR control work together
     def train(self, env, num_episodes=500, max_macro_steps= 512, model_path="sac_lqr_best_model.pth"):
-        """
-        训练流程：
-          1. 重置环境，获取初始状态（起点及终点）
-          2. 循环：高层 SAC 根据当前状态选择局部子目标（局部目标 = 当前位置信息 + 输出偏移，偏移范围受限于感知范围 10 米）
-          3. 低层：利用 A*（仅考虑感知范围内障碍）规划局部路径，然后使用 LQR 控制器跟踪局部路径，累计步级奖励
-          4. 将该“宏步”作为一次高层 transition 存入经验池，并更新 SAC 网络
-          5. 重复以上过程直至 AUV 到达终点（目标距离小于 2 米）
-        """
+    """
+    Training process:
+    1. Reset the environment and get the initial state (starting point and end point)
+    2. Loop: The high-level SAC selects a local sub-goal according to the current state (local goal = current position information + output offset, the offset range is limited to the perception range of 10 meters)
+    3. Low-level: Use A* (only consider obstacles within the perception range) to plan the local path, and then use the LQR controller to track the local path and accumulate step rewards
+    4. Store the "macro step" as a high-level transition in the experience pool and update the SAC network
+    5. Repeat the above process until the AUV reaches the end point (the target distance is less than 2 meters)
+    """
         wandb.init(project="auv_SAC_LQR_planning", name=model_path)
         wandb.config.update({
             "state_dim": self.state_dim,
@@ -643,7 +604,7 @@ class SACLQRPlanner(BasePlanner):
             macro_step = 0
             episode_reward = 0.0
 
-            # 重置本 episode 评价指标
+            # Reset this episode's evaluation metrics
             self.episode_out_of_box_penalty = 0.0
             self.episode_energy_penalty = 0.0
             self.episode_smoothness_penalty = 0.0
@@ -662,20 +623,20 @@ class SACLQRPlanner(BasePlanner):
 
             while macro_step < max_macro_steps:
 
-                # 构造当前状态，用于高层 SAC（状态包含：位置、rotation、速度、激光传感器数据，加上海流信息和全局目标）
-                # 这里简化处理，直接将各传感器数据拼接
+               # Construct the current state for high-level SAC (the state includes: position, rotation, speed, laser sensor data, plus ocean current information and global goals)
+                # Here we simplify the processing and directly splice the data from each sensor
                 pre_state = EnvState(current_pos, env.rotation.copy(), current_velocity, env.lasers.copy())
-                # 假设海流信息置0（或可调用相应函数），这里简化
+                # SAC agent selects local offset (local subgoal = current_pos + offset); Note: offset must be within the perception range
                 pre_state_vec = np.append(pre_state.vec, [0.0, *self.end])
                 # SAC agent 选择局部偏移（局部子目标 = current_pos + offset）；注意：偏移必须在感知范围内
                 local_offset = self.select_action(pre_state_vec)
-                # 限制偏移范数不超过 sensor_range
+                # Limit the offset norm to not exceed sensor_range
                 if np.linalg.norm(local_offset) > self.sensor_range:
                     local_offset = local_offset / np.linalg.norm(local_offset) * self.sensor_range
                 local_goal = current_pos + local_offset
                 logging.info(f"Macro step {macro_step+1}: local goal = {local_goal}")
 
-                # 规划局部路径：仅使用感知范围内的障碍物
+                # Plan a local path: only use obstacles within the sensing range
                 local_obstacles = []
                 for obs in env.obstacles:
                     if np.linalg.norm(np.array(obs) - current_pos) <= self.sensor_range:
@@ -689,13 +650,13 @@ class SACLQRPlanner(BasePlanner):
                     self.remember(pre_state_vec, local_offset, reward_penalty, pre_state_vec, 1)
                     break
 
-                # 平滑局部路径
+
                 path = self.smooth_path(path, smoothing_factor=1.0, num_points=100)
-                # （可选）在环境中绘制局部路径
+     
                 for i in range(len(path) - 1):
                     env.env.draw_line(path[i].tolist(), path[i+1].tolist(), color=[0,100,0], thickness=3, lifetime=0)
 
-                # 低层跟踪局部路径，返回新状态、累计奖励、步数
+                # The low layer tracks the local path and returns the new state, accumulated reward, and number of steps
                 new_pos, macro_reward, steps_taken = self.follow_local_path(env, path, local_goal, max_steps=100)
 
 
@@ -704,12 +665,9 @@ class SACLQRPlanner(BasePlanner):
                     break
                 macro_step += 1
 
-                # 构造下一个状态
                 post_state = EnvState(new_pos, env.rotation.copy(), env.velocity.copy(), env.lasers.copy())
                 post_state_vec = np.append(post_state.vec, [0.0, *self.end])
-                # 存储高层 transition（用累计奖励作为本宏步奖励）
                 self.remember(pre_state_vec, local_offset, macro_reward, post_state_vec, self.done)
-                # 更新 SAC agent
                 self.update_policy()
                 current_pos = new_pos.copy()
                 current_velocity = env.velocity.copy()
