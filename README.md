@@ -1,7 +1,3 @@
-Based on the content of your paper UP-Bench: A Benchmark for Underwater Path Planning Algorithms, here is a README description for your code repository:
-
-⸻
-
 UP-Bench: A Benchmark for Underwater Path Planning Algorithms
 
 Author: Di Yang, Yanhai Xiong
