@@ -13,15 +13,15 @@ import torch.distributions as D
 from collections import deque
 import wandb
 
-# 假设 BasePlanner 在同目录下的 base 模块中定义
 from .base import BasePlanner
 
-# 从工具模块中导入海流、动作相关工具函数和奖励函数
+
+# Import ocean current, action related tool functions and reward functions from the tool module
 from .rl_utils import (calculate_ocean_current, calculate_action_effect,
                        normalize_action, denormalize_action)
 from .rl_rewards import calculate_reward
 
-# 导入自定义环境
+# # Import a custom environment
 
 logging.basicConfig(level=logging.INFO, format='%(message)s', handlers=[
     logging.FileHandler("training.log"),
@@ -31,14 +31,14 @@ logging.basicConfig(level=logging.INFO, format='%(message)s', handlers=[
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 
-# 辅助状态类，用于构造奖励函数所需的状态对象，模拟原 State 类（提供 .vec 属性）
+# Auxiliary state class, used to construct the state object required by the reward function (provides .vec attribute)
 class EnvState:
     def __init__(self, location, rotation, velocity, lasers):
         # 将各传感器数据拼接为一个向量
         self.vec = np.concatenate([location, rotation, velocity, lasers])
 
 
-# 优先经验回放缓冲区
+# Prioritize experience replay buffer
 class PrioritizedReplayBuffer:
     def __init__(self, capacity, alpha=0.6):
         self.capacity = capacity
@@ -81,7 +81,6 @@ class PrioritizedReplayBuffer:
         return len(self.buffer)
 
 
-# 策略网络
 class PolicyNetwork(nn.Module):
     def __init__(self, state_dim, action_dim, max_action):
         super(PolicyNetwork, self).__init__()
@@ -120,7 +119,7 @@ class PolicyNetwork(nn.Module):
         return action, log_prob
 
 
-# Q网络
+# Q net
 class QNetwork(nn.Module):
     def __init__(self, state_dim, action_dim):
         super(QNetwork, self).__init__()
@@ -137,26 +136,24 @@ class QNetwork(nn.Module):
         return self.net(x)
 
 
-# SAC强化学习规划器
+# SAC-planner
 class SACPlanner(BasePlanner):
     def __init__(self, num_seconds, num_obstacles=20, state_dim=29, action_dim=3,
                  lr=2e-3, gamma=0.95, tau=0.02, batch_size=128,
                  replay_buffer_size=100000, config_file="./config_all.yaml"):
-        # 加载配置文件
         config_file = os.path.join(os.path.dirname(__file__), "config_all.yaml")
         with open(config_file, 'r', encoding="utf-8") as f:
             self.config = yaml.safe_load(f)
-        # 设置全局随机种子
-        seed = self.config.get("seed", 42)
+
+          seed = self.config.get("seed", 42)
         np.random.seed(seed)
         random.seed(seed)
         torch.manual_seed(seed)
 
-        # 当前环境级别（如果需要，可根据配置切换）
         self.env_level = self.config["environment"]["level"]
         self.current_scene_index = 0
 
-        # SAC相关超参数
+        # SAC parameter
         self.target_entropy = -np.prod(action_dim) * 1
         self.log_alpha = torch.tensor(0.0, requires_grad=True, device=device)
         self.alpha_optimizer = optim.Adam([self.log_alpha], lr=1e-3)
@@ -174,7 +171,8 @@ class SACPlanner(BasePlanner):
         self.episode_current_utilization_reward = 0
         self.episode_safety_reward = 0
         self.episode_reach_target_reward = 0
-        # Benchmark 指标初始化（路径长度、碰撞数等）
+                   
+        # Benchmark 
         self.static_counter = 0
         self.total_length = 0
         self.episode_path_length = 0
@@ -196,14 +194,13 @@ class SACPlanner(BasePlanner):
         self.tau = tau
         self.batch_size = batch_size
 
-        # 由于现在直接使用custom_env提供的状态、目标信息，
-        # 在每个episode开始时，我们将根据环境返回的数据设置起点和目标
+
         self.start = None
         self.end = None
         self.OG_distance_to_goal = None
         self.prev_distance_to_goal = None
 
-        # 动作限制设置（与原来一致，后续海流影响逻辑会用到）
+
         self.max_lin_accel = 20.0
         self.max_ang_accel = 2.0
         self.max_action = np.array([self.max_lin_accel] * 3)
@@ -226,7 +223,7 @@ class SACPlanner(BasePlanner):
         self.q_optimizer1 = optim.Adam(self.q_net1.parameters(), lr=self.lr)
         self.q_optimizer2 = optim.Adam(self.q_net2.parameters(), lr=self.lr)
 
-        # 学习率调度器（可选）
+        # lr-schedular
         self.policy_scheduler = optim.lr_scheduler.StepLR(self.policy_optimizer, step_size=768, gamma=0.95)
         self.q_scheduler1 = optim.lr_scheduler.StepLR(self.q_optimizer1, step_size=768, gamma=0.95)
         self.q_scheduler2 = optim.lr_scheduler.StepLR(self.q_optimizer2, step_size=768, gamma=0.95)
@@ -244,7 +241,7 @@ class SACPlanner(BasePlanner):
         self.ticks_per_sec = 100
         self.current_time = 0.0
 
-        # 关于海流的参数（保留原有逻辑）
+        # ocean parameter
         self.current_strength = 0.5
         self.current_frequency = np.pi
         self.current_mu = 0.25
@@ -281,7 +278,7 @@ class SACPlanner(BasePlanner):
     def update_policy(self):
         if len(self.memory) < self.batch_size:
             return
-        update_times = 1  # 可根据需要调整更新次数
+        update_times = 1  
         for _ in range(update_times):
             samples, weights, indices = self.memory.sample(self.batch_size, beta=self.beta, alpha=self.per_alpha)
             self.beta = min(1.0, self.beta + self.beta_increment_per_sampling)
@@ -326,12 +323,12 @@ class SACPlanner(BasePlanner):
             alpha_loss.backward()
             self.alpha_optimizer.step()
             self.alpha = self.log_alpha.exp().item()
-        # 更新目标网络
+      
         for target_param, param in zip(self.target_q_net1.parameters(), self.q_net1.parameters()):
             target_param.data.copy_(self.tau * param.data + (1 - self.tau) * target_param.data)
         for target_param, param in zip(self.target_q_net2.parameters(), self.q_net2.parameters()):
             target_param.data.copy_(self.tau * param.data + (1 - self.tau) * target_param.data)
-        # 更新学习率调度器
+        # 
         # self.policy_scheduler.step()
         # self.q_scheduler1.step()
         # self.q_scheduler2.step()
@@ -356,13 +353,13 @@ class SACPlanner(BasePlanner):
         }, model_path)
 
     def train(self, env , num_episodes=500, max_steps=3000, model_path="sac_best_model.pth"):
-        """
-        使用 custom_environment 进行训练：
-         - 重置环境时调用 env.reset()（内部绘制目标和障碍物）
-         - 获取初始传感器数据后调用 env.update_state() 更新内部状态（location, rotation, velocity, lasers）
-         - 使用 env.get_current_target() 获取目标位置
-         - 每步调用 env.tick(adjusted_action) 执行动作，并更新状态
-        """
+      """
+      Training with custom_environment:
+      - Call env.reset() to reset the environment (draw targets and obstacles internally)
+      - Call env.update_state() to update internal states (location, rotation, velocity, lasers) after getting initial sensor data
+      - Use env.get_current_target() to get the target position
+      - Call env.tick(adjusted_action) at each step to execute the action and update the state
+      """
         wandb.init(project="auv_RL_control_SAC_acceleration_1015", name=model_path)
         wandb.config.update({
             "state_dim": self.state_dim,
@@ -384,17 +381,16 @@ class SACPlanner(BasePlanner):
 
             episode_start_time = time.time()
             logging.info(f"Episode {episode + 1} starting")
-            # 重置环境（目标、障碍物等均由 custom_environment 内部处理）
+          
             env.reset()
             if done == 1:
                 env.set_current_target(env.choose_next_target())
                 env.draw_targets()
 
-            # 用零动作获得初始传感器数据并更新状态
+     
             init_action = np.zeros(6)
             sensors = env.tick(init_action)
             env.update_state(sensors)
-            # 设置起点和目标（目标由 env.get_current_target() 给出）
             self.start = env.location.copy()
             self.end = np.array(env.get_current_target())
             self.OG_distance_to_goal = np.linalg.norm(self.start - self.end)
@@ -428,34 +424,28 @@ class SACPlanner(BasePlanner):
 
             while  done == 0 and step_count < max_steps_episode:
                 current_pos = env.location.copy()
-                # 计算当前状态特征：目标相对位置、归一化距离、进度信息
+
                 relative_position_to_goal = self.end - current_pos
                 dist_to_goal = np.linalg.norm(relative_position_to_goal)
 
                 self.prev_distance_to_goal = dist_to_goal
 
-                # 计算离最近障碍物的距离（使用 env.obstacles 列表）
                 if env.obstacles:
                     distances = [np.linalg.norm(current_pos - np.array(obs)) for obs in env.obstacles]
                     distance_to_nearest_obstacle = min(distances)
                 else:
                     distance_to_nearest_obstacle = 100.0
 
-                # 构造奖励函数所需的状态（使用 EnvState 封装）
                 pre_state = EnvState(current_pos, env.rotation.copy(), env.velocity.copy(), env.lasers.copy())
-                # 计算当前海流影响（保留原有逻辑）
                 ocean_current = calculate_ocean_current(self, current_pos, self.current_time)
                 pre_state =  np.append(pre_state.vec, [ocean_current,self.end])
 
-                # 选择动作（经过策略网络输出归一化动作）
                 action = self.select_action(pre_state)
-                # 根据海流影响调整动作
                 real_action = denormalize_action(self, action)
                 adjusted_action = calculate_action_effect(self, real_action, ocean_current)
                 normalized_adjusted_action = normalize_action(self, adjusted_action)
                 use_action = np.append(adjusted_action, [0, 0, 0])
 
-                # 执行动作，并更新环境状态
                 sensors = env.tick(use_action)
                 env.update_state(sensors)
                 next_pos = env.location.copy()
@@ -479,7 +469,6 @@ class SACPlanner(BasePlanner):
                 #     break
                 self.update_policy()
 
-                # 如果靠近目标且进展良好，则延长最大步数（原逻辑保留）
                 if next_dist_to_goal < 10 and step_count >= max_steps_episode - 1 and added_steps < 512 and next_dist_to_goal < dist_to_goal:
                     max_steps_episode += 1
                     added_steps += 1
