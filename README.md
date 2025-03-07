@@ -1,4 +1,3 @@
-Here’s a stable and structured README.md file incorporating the benchmarking, individual planner execution, and GUI-based simulation functionalities.
 
 # UP-Bench: A Benchmark for Underwater Path Planning Algorithms
 
