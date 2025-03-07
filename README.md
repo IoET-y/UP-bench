@@ -1,5 +1,3 @@
-Here’s the README in Markdown format:
-
 # UP-Bench: A Benchmark for Underwater Path Planning Algorithms
 
 **Author:** Di Yang, Yanhai Xiong  
@@ -87,13 +85,7 @@ To execute a specific path planning algorithm:
 
 python run.py --algorithm ACO --env OpenWater
 
-Available options for --algorithm: A*, Dijkstra, RRT, GA, ACO, SAC, SAC+A*, SAC+A*+LQR.
-
-🤖 Training an RL-based Planner
-
-For training an RL-based path planner:
-
-python train.py --algorithm SAC --episodes 1000
+Available options for --algorithm: A*, Dijkstra, RRT, GA, ACO, SAC, real-time adapted classical algorithm and SAC+A*, SAC+A*+LQR.
 
 📈 Benchmarking & Evaluation
 
