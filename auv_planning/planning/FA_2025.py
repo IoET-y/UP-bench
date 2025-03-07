@@ -1,5 +1,3 @@
-#auv_planning/planning/FA_2025.py
-
 import numpy as np
 import math
 import random
@@ -9,7 +7,6 @@ import wandb
 import scipy.linalg
 from scipy.interpolate import splprep, splev
 
-# 假设 BasePlanner 在同目录下的 base 模块中定义
 from .base import BasePlanner
 
 
@@ -18,32 +15,8 @@ class FireflyPlanner(BasePlanner):
                  max_lin_accel=10, collision_threshold=5.0,
                  population_size=40, iterations=100, num_intermediate=10,
                  alpha_firefly=0.2, beta0=1.0, gamma=1.0):
-        """
-        参数说明：
-          - grid_resolution: 用于碰撞检测的分辨率
-          - max_steps: 每个 episode 允许的最大步数
-          - max_lin_accel: 最大线性加速度（控制指令上限）
-          - collision_threshold: 碰撞检测阈值
-          - population_size: 萤火虫（候选路径）数量
-          - iterations: 萤火虫算法迭代次数
-          - num_intermediate: 候选路径中除起点和目标外的中间点数量
-          - alpha_firefly: 随机扰动因子
-          - beta0: 初始吸引力系数
-          - gamma: 吸收系数（控制距离衰减）
-        """
-        # EVALUATION METRICS
-        self.ave_path_length = 0
-        self.ave_excu_time = 0
-        self.ave_smoothness = 0
-        self.ave_energy = 0
-        self.ave_plan_time = 0
 
-        self.grid_resolution = grid_resolution
-        self.max_steps = max_steps
-        self.max_lin_accel = max_lin_accel
-        self.collision_threshold = collision_threshold
-
-        # Firefly 算法参数
+        # Firefly parameter
         self.population_size = population_size
         self.iterations = iterations
         self.num_intermediate = num_intermediate
@@ -51,47 +24,12 @@ class FireflyPlanner(BasePlanner):
         self.beta0 = beta0
         self.gamma = gamma
 
-        self.ticks_per_sec = 100
-        self.ts = 1.0 / self.ticks_per_sec  # 离散时间步长
-        self.current_time = 0.0
-
-        # 规划区域设置：例如 x:0~100, y:0~100, z:-100~0
-        self.x_min = 0
-        self.x_max = 100
-        self.y_min = 0
-        self.y_max = 100
-        self.z_min = -100
-        self.z_max = 0
-
-        # 障碍物安全半径（用于碰撞检测时“膨胀”障碍）
         self.obstacle_radius = 5
 
-        # -------------------------------
-        # 离线设计 LQR 控制器
-        # 假设 agent 的动力学为双积分模型：
-        #   p_{k+1} = p_k + dt*v_k + 0.5*dt^2*u_k
-        #   v_{k+1} = v_k + dt*u_k
-        # 状态 x = [p; v] ∈ R^6, 控制 u ∈ R^3.
-        I3 = np.eye(3)
-        A = np.block([
-            [np.eye(3), self.ts * np.eye(3)],
-            [np.zeros((3, 3)), np.eye(3)]
-        ])
-        B = np.block([
-            [0.5 * (self.ts ** 2) * np.eye(3)],
-            [self.ts * np.eye(3)]
-        ])
-        # 设置较高的位置权重，同时适当增加速度权重，使得控制更平滑
-        Q = np.diag([100.0, 100.0, 100.0, 10.0, 10.0, 10.0])
-        R = np.diag([0.1, 0.1, 0.1])
-        P = scipy.linalg.solve_discrete_are(A, B, Q, R)
-        self.K = np.linalg.inv(R + B.T @ P @ B) @ (B.T @ P @ A)
-        # -------------------------------
-
         super().__init__()
-
+    
     # -------------------------
-    # Firefly 算法相关方法
+    # Firefly algorithm  methods
     # -------------------------
     def generate_candidate(self, start, goal):
         """
@@ -110,14 +48,14 @@ class FireflyPlanner(BasePlanner):
 
     def initialize_population(self, start, goal):
         """
-        初始化种群，每个个体为一条候选路径（NumPy 数组）
+        Initialize the population, each individual is a candidate path (NumPy array)
         """
         return [self.generate_candidate(start, goal) for _ in range(self.population_size)]
 
     def is_collision_free(self, p1, p2, obstacles):
         """
-        检查从 p1 到 p2 的直线路径是否与任一障碍物碰撞，
-        采用线段采样检测，若任一点距离障碍物小于 obstacle_radius 则认为碰撞。
+        Check whether the straight line path from p1 to p2 collides with any obstacle.
+        Use line segment sampling detection. If the distance from any point to the obstacle is less than obstacle_radius, it is considered a collision.
         """
         dist = np.linalg.norm(p2 - p1)
         num_samples = max(int(dist / (self.grid_resolution / 2)), 2)
@@ -131,7 +69,7 @@ class FireflyPlanner(BasePlanner):
 
     def path_collision_penalty(self, candidate, obstacles):
         """
-        计算候选路径中所有相邻点之间的碰撞惩罚，若发生碰撞则累加惩罚值。
+        Calculate the collision penalty between all adjacent points in the candidate path, and accumulate the penalty value if a collision occurs.
         """
         penalty = 0.0
         for i in range(candidate.shape[0] - 1):
@@ -141,33 +79,31 @@ class FireflyPlanner(BasePlanner):
 
     def path_length(self, candidate):
         """
-        利用向量化计算候选路径总长度（欧氏距离累计）
+        Use vectorization to calculate the total length of candidate paths (Euclidean distance accumulation)
         """
         diffs = np.diff(candidate, axis=0)
         return np.sum(np.linalg.norm(diffs, axis=1))
 
     def fitness(self, candidate, obstacles):
         """
-        候选路径的适应度：路径长度加上碰撞惩罚（越小越好）
+        Fitness of candidate path: path length plus collision penalty (the smaller the better)
         """
         return self.path_length(candidate) + self.path_collision_penalty(candidate, obstacles)
 
     def run_firefly_algorithm(self, start, goal, obstacles):
         """
-        执行萤火虫算法规划路径，返回适应度最优的候选路径（NumPy 数组形式）
+        Execute the firefly algorithm to plan the path and return the candidate path with the best fitness (in NumPy array format)
         """
         population = self.initialize_population(start, goal)
         best_candidate = None
         best_fitness = np.inf
 
-        # 早停参数：若连续 early_stop_threshold 次迭代无改进，则提前终止
         no_improvement = 0
         early_stop_threshold = 10
         improvement_threshold = 1e-3
 
         for it in range(self.iterations):
             fitnesses = [self.fitness(candidate, obstacles) for candidate in population]
-            # 更新全局最优解
             current_best = min(fitnesses)
             current_best_idx = fitnesses.index(current_best)
             if current_best < best_fitness - improvement_threshold:
@@ -176,11 +112,11 @@ class FireflyPlanner(BasePlanner):
                 no_improvement = 0
             else:
                 no_improvement += 1
-            # 提前退出判断
+            
             if no_improvement >= early_stop_threshold:
                 logging.info(f"Early stopping at iteration {it+1} due to no improvement.")
                 break
-            # 对每对火萤进行比较与吸引
+
             for i in range(self.population_size):
                 for j in range(self.population_size):
                     if fitnesses[j] < fitnesses[i]:
@@ -210,19 +146,19 @@ class FireflyPlanner(BasePlanner):
         return [pt for pt in smooth_path]
 
     # -------------------------
-    # 训练（规划与跟踪）过程
+    # Planning and Tracking Process
     # -------------------------
     def train(self, env, num_episodes=10):
         """
-        使用萤火虫算法规划路径后，利用 LQR 控制器跟踪规划路径。
-        过程：
-          1. 重置环境，获取起点 (env.location) 和目标 (env.get_current_target())。
-          2. 利用萤火虫算法规划路径（采用环境中的障碍物信息）。
-          3. 对规划路径进行样条平滑处理。
-          4. 构造状态 x = [position, velocity] 与期望状态 x_des，
-             其中期望位置由路径点给出，期望速度依据相邻路径点计算（设定目标速度）。
-          5. 利用 LQR 控制器生成控制输入 u = -K (x - x_des)，限制在最大加速度内，角加速度置 0。
-          6. 统计指标，并通过 wandb.log 记录日志。
+        After planning the path using the firefly algorithm, use the LQR controller to track the planned path.
+        Process:
+        1. Reset the environment and get the starting point (env.location) and target (env.get_current_target()).
+        2. Use the firefly algorithm to plan the path (using the obstacle information in the environment).
+        3. Perform spline smoothing on the planned path.
+        4. Construct the state x = [position, velocity] and the expected state x_des,
+        where the expected position is given by the path point, and the expected velocity is calculated based on the adjacent path points (set the target velocity).
+        5. Use the LQR controller to generate the control input u = -K (x - x_des), limit it to the maximum acceleration, and set the angular acceleration to 0.
+        6. Statistical indicators and log them through wandb.log.
         """
         wandb.init(project="auv_Firefly_3D_LQR_planning", name="Firefly_3D_LQR_run")
         wandb.config.update({
@@ -232,6 +168,7 @@ class FireflyPlanner(BasePlanner):
             "collision_threshold": self.collision_threshold,
             "population_size": self.population_size,
             "iterations": self.iterations,
+            "num_episodes": num_episodes,
             "num_intermediate": self.num_intermediate,
             "alpha_firefly": self.alpha_firefly,
             "beta0": self.beta0,
@@ -250,30 +187,27 @@ class FireflyPlanner(BasePlanner):
             episode_start_time = time.time()
             logging.info(f"Firefly LQR Episode {episode + 1} starting")
             env.reset()
-            # 用零动作获取初始状态
+
             init_action = np.zeros(6)
             sensors = env.tick(init_action)
             env.update_state(sensors)
-            start_pos = env.location.copy()  # 3D 起点
+            start_pos = env.location.copy()  
             target = env.get_current_target()
-            goal_pos = np.array(target)  # 3D 目标
+            goal_pos = np.array(target) 
             logging.info(f"Start: {start_pos}, Goal: {goal_pos}")
 
-            # 利用萤火虫算法规划路径
             candidate_path = self.run_firefly_algorithm(start_pos, goal_pos, env.obstacles)
             if candidate_path is None:
                 logging.info("萤火虫算法未能找到路径。")
                 episode += 1
                 continue
 
-            # 对规划路径进行平滑处理
             path = self.smooth_path(candidate_path, smoothing_factor=1.0, num_points=200)
 
-            # 绘制规划路径（在环境中展示）
             for i in range(len(path) - 1):
                 env.env.draw_line(path[i].tolist(), path[i + 1].tolist(), color=[30, 50, 0], thickness=5, lifetime=0)
 
-            # 跟踪控制参数
+            # tracking parameter
             step_count = 0
             total_path_length = 0.0
             collisions = 0
@@ -285,22 +219,22 @@ class FireflyPlanner(BasePlanner):
             max_steps_episode = self.max_steps
             episode_planning_duration = time.time() - episode_start_time
             episode_start_running_time = time.time()
-            # 跟踪控制循环
+            # tracking loop
             while step_count < max_steps_episode:
-                # 判断是否到达目标（以规划区域尺度为阈值）
+                # # Determine whether the target has been reached (with the planning area scale as the threshold)
                 if np.linalg.norm(current_pos - goal_pos) < 2:
                     logging.info("Reached goal.")
                     reach_target_count += 1
                     break
 
-                # 选择当前路径点作为期望目标
+                # Select the current path point as the desired target
                 if path_idx >= len(path):
                     waypoint = goal_pos
                     v_des = np.zeros(3)
                 else:
                     waypoint = path[path_idx]
                     if path_idx < len(path) - 1:
-                        desired_speed = 3.0  # 单位 [m/s]
+                        desired_speed = 3.0  #  [m/s]
                         direction = path[path_idx + 1] - waypoint
                         norm_dir = np.linalg.norm(direction)
                         if norm_dir > 1e-6:
