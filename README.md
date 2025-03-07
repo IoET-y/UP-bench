@@ -87,8 +87,8 @@ pip install -r requirements.txt
 📈 Running Full Benchmark
 
 To evaluate all planners:
-
-python benchmark.py --max_step 5000 --BS 32
+	
+	python benchmark.py --max_step 5000 --BS 32
 
 This script iterates over all available planning algorithms, evaluates them, and outputs the success rate, execution time, path length, and other metrics.
 
@@ -98,7 +98,7 @@ This script iterates over all available planning algorithms, evaluates them, and
 
 To run a specific path planning algorithm:
 
-python run_single_algorithm.py --route ACO --num_episodes 100 --max_step 5000
+	python run_single_algorithm.py --route ACO --num_episodes 100 --max_step 5000
 
 Available options for --route:
 	•	astar
@@ -112,7 +112,7 @@ Available options for --route:
 
 🎨 Visualizing Results
 
-python visualize.py --log-dir logs/
+	python visualize.py --log-dir logs/
 
 
 
