@@ -34,7 +34,7 @@ device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 # Auxiliary state class, used to construct the state object required by the reward function (provides .vec attribute)
 class EnvState:
     def __init__(self, location, rotation, velocity, lasers):
-        # 将各传感器数据拼接为一个向量
+
         self.vec = np.concatenate([location, rotation, velocity, lasers])
 
 
@@ -138,7 +138,7 @@ class QNetwork(nn.Module):
 
 # SAC-planner
 class SACPlanner(BasePlanner):
-    def __init__(self, num_seconds, num_obstacles=20, state_dim=29, action_dim=3,
+    def __init__(self, num_obstacles=20, state_dim=29, action_dim=3,
                  lr=2e-3, gamma=0.95, tau=0.02, batch_size=128,
                  replay_buffer_size=100000, config_file="./config_all.yaml"):
         config_file = os.path.join(os.path.dirname(__file__), "config_all.yaml")
@@ -186,8 +186,8 @@ class SACPlanner(BasePlanner):
 
 
 
-        self.num_seconds = num_seconds
-        self.state_dim = state_dim   # 本文中用于策略输入的状态维度（此处根据实际需求设置）
+
+        self.state_dim = state_dim   
         self.action_dim = action_dim
         self.gamma = gamma
         self.lr = lr
@@ -206,7 +206,7 @@ class SACPlanner(BasePlanner):
         self.max_action = np.array([self.max_lin_accel] * 3)
         self.max_action_normalize = np.array([1] * 3)
 
-        # 网络及优化器初始化
+
         self.policy_net = PolicyNetwork(self.state_dim, self.action_dim, self.max_action_normalize).to(device)
         self.q_net1 = QNetwork(self.state_dim, self.action_dim).to(device)
         self.q_net2 = QNetwork(self.state_dim, self.action_dim).to(device)
