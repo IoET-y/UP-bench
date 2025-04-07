@@ -185,7 +185,7 @@ class SACPlanner(BasePlanner):
         self.episode_time_penalty = 0
 
 
-
+        self.max_episode = 300
         self.num_seconds = num_seconds
         self.state_dim = state_dim   # 本文中用于策略输入的状态维度（此处根据实际需求设置）
         self.action_dim = action_dim
@@ -376,14 +376,14 @@ class SACPlanner(BasePlanner):
         self.step_cnt = 0
         done = 0
         episode = 0
-
+        local_espd = 0
         while self.reach_targe_times < 10: #episode in range(num_episodes):
 
             episode_start_time = time.time()
             logging.info(f"Episode {episode + 1} starting")
           
             env.reset()
-            if done == 1:
+            if done == 1 or local_espd > self.max_episode:
                 env.set_current_target(env.choose_next_target())
                 env.draw_targets()
 
@@ -497,7 +497,10 @@ class SACPlanner(BasePlanner):
                     wandb.log({"episode": episode + 1, "reach_targe_times": self.reach_targe_times})
                     self.save_model(episode + 1, model_path)
                     break
-
+                if local_espd > self.max_episode:
+                    wandb.log({"episode": episode + 1, "reach_targe_times": self.reach_targe_times})
+                    self.save_model(episode + 1, model_path)
+                    break
             episode_duration = time.time() - episode_start_time
             wandb.log({
                 "episode": episode + 1,
@@ -521,6 +524,7 @@ class SACPlanner(BasePlanner):
             logging.info(f"Episode {episode + 1} completed - Total Reward: {total_reward}")
             self.save_model(episode + 1, model_path)
             episode += 1
+            local_espd += 1
 
     def save_model(self, episode, path='sac_best_model.pth'):
         torch.save({
