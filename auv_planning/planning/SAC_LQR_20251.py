@@ -712,6 +712,8 @@ class SACLQRPlanner(BasePlanner):
             logging.info(f"Episode {episode+1} completed - Total Reward: {episode_reward}")
             self.save_model(episode+1, model_path)
             episode += 1
+            local_espd += 1
+
 
         logging.info("SAC+LQR Planning finished training.")
         return
