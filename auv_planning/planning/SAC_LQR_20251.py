@@ -149,6 +149,7 @@ class SACLQRPlanner(BasePlanner):
         random.seed(seed)
         torch.manual_seed(seed)
 
+        self.max_episode = 100
         self.max_steps = max_steps
         self.gamma = gamma
         self.lr = lr
@@ -582,14 +583,17 @@ class SACLQRPlanner(BasePlanner):
         })
         episode = 0
         self.done = 0
+        local_espd = 0
         while self.reach_targe_times < 10:
             episode_start_time = time.time()
             logging.info(f"Episode {episode+1} starting")
             env.reset()
-            if self.done == 1:
+          
+            if self.done == 1 or local_espd > self.max_episode:
                 env.set_current_target(env.choose_next_target())
                 env.draw_targets()
                 self.done = 0
+                local_espd = 0
 
             # 用零动作获取初始状态
             init_action = np.zeros(6)
@@ -671,7 +675,8 @@ class SACLQRPlanner(BasePlanner):
                 self.update_policy()
                 current_pos = new_pos.copy()
                 current_velocity = env.velocity.copy()
-                if self.done == 1:
+                if self.done == 1 or local_espd > self.max_episode:
+                    
                     break
 
                 # 日志记录
